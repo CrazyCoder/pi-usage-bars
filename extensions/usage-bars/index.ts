@@ -6,7 +6,7 @@
  * in the footer status bar.
  */
 
-import { DynamicBorder, type ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { DynamicBorder, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Input,
@@ -14,7 +14,7 @@ import {
   Text,
   getKeybindings,
   type Focusable,
-} from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-tui";
 import {
   canShowForProvider,
   clampPercent,

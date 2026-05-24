@@ -359,7 +359,7 @@ let cachedOAuthResolver: OAuthApiKeyResolver | null = null;
 async function getDefaultOAuthResolver(): Promise<OAuthApiKeyResolver> {
   if (cachedOAuthResolver) return cachedOAuthResolver;
 
-  const mod = await import("@mariozechner/pi-ai");
+  const mod = await import("@earendil-works/pi-ai/oauth");
   if (typeof (mod as any).getOAuthApiKey !== "function") {
     throw new Error("oauth resolver unavailable");
   }
