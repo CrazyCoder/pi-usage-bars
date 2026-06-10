@@ -2,7 +2,7 @@
 
 Usage indicator for **pi**.
 
-![Codex footer bar](https://raw.githubusercontent.com/ajarellanod/pi-usage-bars/main/assets/codex.png)
+![Codex footer bar](https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/codex.png)
 
 It adds:
 - a footer status bar for the active provider
@@ -39,9 +39,9 @@ When your active model is supported, footer shows:
 - Weekly usage
 - Reset countdowns (when available)
 
-![Claude footer bar](https://raw.githubusercontent.com/ajarellanod/pi-usage-bars/main/assets/claude.png)
+![Claude footer bar](https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/claude.png)
 
 ### 2) `/usage` command
 Opens an interactive list with all providers that have credentials.
 
-![/usage command](https://raw.githubusercontent.com/ajarellanod/pi-usage-bars/main/assets/usage-command.png)
+![/usage command](https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/usage-command.png)
