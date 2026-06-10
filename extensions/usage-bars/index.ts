@@ -6,13 +6,12 @@
  * in the footer status bar.
  */
 
-import { DynamicBorder, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Input,
   Spacer,
   Text,
-  getKeybindings,
   type Focusable,
 } from "@earendil-works/pi-tui";
 import {
@@ -58,6 +57,7 @@ class UsageSelectorComponent extends Container implements Focusable {
   private hintText: Text;
   private tui: any;
   private theme: any;
+  private keybindings: any;
   private onCancelCallback: () => void;
   private allItems: SubscriptionItem[] = [];
   private filteredItems: SubscriptionItem[] = [];
@@ -82,6 +82,7 @@ class UsageSelectorComponent extends Container implements Focusable {
     activeProvider: ProviderKey | null,
     fetchAll: () => Promise<UsageByProvider>,
     onCancel: () => void,
+    keybindings: any,
   ) {
     super();
     this.tui = tui;
@@ -89,6 +90,7 @@ class UsageSelectorComponent extends Container implements Focusable {
     this.activeProvider = activeProvider;
     this.fetchAllFn = fetchAll;
     this.onCancelCallback = onCancel;
+    this.keybindings = keybindings;
 
     this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
     this.addChild(new Spacer(1));
@@ -263,9 +265,7 @@ class UsageSelectorComponent extends Container implements Focusable {
   }
 
   handleInput(keyData: string): void {
-    const kb = getKeybindings();
-
-    if (kb.matches(keyData, "tui.select.up")) {
+    if (this.keybindings.matches(keyData, "tui.select.up")) {
       if (this.filteredItems.length === 0) return;
       this.selectedIndex =
         this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
@@ -273,7 +273,7 @@ class UsageSelectorComponent extends Container implements Focusable {
       return;
     }
 
-    if (kb.matches(keyData, "tui.select.down")) {
+    if (this.keybindings.matches(keyData, "tui.select.down")) {
       if (this.filteredItems.length === 0) return;
       this.selectedIndex =
         this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
@@ -281,7 +281,7 @@ class UsageSelectorComponent extends Container implements Focusable {
       return;
     }
 
-    if (kb.matches(keyData, "tui.select.cancel") || kb.matches(keyData, "tui.select.confirm")) {
+    if (this.keybindings.matches(keyData, "tui.select.cancel") || this.keybindings.matches(keyData, "tui.select.confirm")) {
       this.onCancelCallback();
       return;
     }
@@ -538,13 +538,14 @@ export default function (pi: ExtensionAPI) {
 
       try {
         if (_ctx?.hasUI) {
-          await _ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+          await _ctx.ui.custom<void>((tui, theme, keybindings, done) => {
             const selector = new UsageSelectorComponent(
               tui,
               theme,
               state.activeProvider,
               () => fetchAllUsages({ endpoints }),
               () => done(),
+              keybindings,
             );
             return selector;
           });
