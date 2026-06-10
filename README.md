@@ -26,7 +26,7 @@ This extension is based on and inspired by:
 ## Install
 
 ```bash
-pi install npm:pi-usage-bars
+pi install https://github.com/hknet/pi-usage-bars
 ```
 
 ---

@@ -6,7 +6,10 @@
  * in the footer status bar.
  */
 
-import { type ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import {
+  type ExtensionAPI,
+  DynamicBorder,
+} from "@earendil-works/pi-coding-agent";
 import {
   Container,
   Input,

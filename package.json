@@ -1,6 +1,6 @@
 {
   "name": "pi-usage-bars",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Production-ready /usage bars extension for pi (Codex, Claude, Z.AI, Gemini CLI, Antigravity)",
   "keywords": [
     "pi-package",
@@ -15,11 +15,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ajarellanod/pi-usage-bars.git"
+    "url": "https://github.com/hknet/pi-usage-bars.git"
   },
-  "homepage": "https://github.com/ajarellanod/pi-usage-bars#readme",
+  "homepage": "https://github.com/hknet/pi-usage-bars#readme",
   "bugs": {
-    "url": "https://github.com/ajarellanod/pi-usage-bars/issues"
+    "url": "https://github.com/hknet/pi-usage-bars/issues"
   },
   "type": "module",
   "files": [
@@ -41,5 +41,8 @@
     "extensions": [
       "./extensions/usage-bars/index.ts"
     ]
+  },
+  "dependencies": {
+    "pi-usage-bars": "file:pi-usage-bars-0.2.3.tgz"
   }
 }
