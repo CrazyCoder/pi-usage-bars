@@ -1,6 +1,6 @@
 {
   "name": "pi-usage-bars",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Production-ready /usage bars extension for pi (Codex, Claude, Z.AI, Gemini CLI, Antigravity)",
   "keywords": [
     "pi-package",
