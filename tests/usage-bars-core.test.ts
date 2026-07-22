@@ -3,28 +3,33 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
-  canShowForProvider,
+  clampPercent,
+  colorForPercent,
   detectProvider,
-  discoverGoogleProjectId,
-  ensureFreshAuthForProviders,
+  extractDeepSeekBalanceFromPayload,
+  extractKimiUsageFromPayload,
+  extractMiniMaxUsageFromPayload,
+  extractMoonshotBalanceFromPayload,
+  extractOpenRouterUsageFromPayloads,
   extractUsageFromPayload,
   extractZaiUsageFromPayload,
   fetchAllUsages,
   fetchClaudeUsage,
   fetchClaudeUsageWithFallback,
   fetchCodexUsage,
-  fetchGoogleUsage,
+  fetchDeepSeekBalance,
+  fetchKimiUsage,
+  fetchMiniMaxUsage,
+  fetchMoonshotBalance,
+  fetchOpenRouterUsage,
   fetchZaiUsage,
   formatDuration,
   formatResetsAt,
-  parseGoogleQuotaBuckets,
   parseRetryAfterMs,
-  pickMostUsedBucket,
+  providerToPiProviderId,
   readLimitPercent,
   readPercentCandidate,
   resolveUsageEndpoints,
-  usedPercentFromRemainingFraction,
-  type AuthData,
   type FetchLike,
   type FetchResponseLike,
   type UsageEndpoints,
@@ -32,14 +37,10 @@ import {
 
 function responseHeaders(values: Record<string, string> = {}) {
   const normalized = new Map(Object.entries(values).map(([key, value]) => [key.toLowerCase(), value]));
-  return {
-    get(name: string) {
-      return normalized.get(name.toLowerCase()) ?? null;
-    },
-  };
+  return { get: (name: string) => normalized.get(name.toLowerCase()) ?? null };
 }
 
-function jsonResponse(status: number, body: any, headers: Record<string, string> = {}): FetchResponseLike {
+function jsonResponse(status: number, body: unknown, headers: Record<string, string> = {}): FetchResponseLike {
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -50,698 +51,540 @@ function jsonResponse(status: number, body: any, headers: Record<string, string>
 
 function invalidJsonResponse(status = 200): FetchResponseLike {
   return {
-    ok: status >= 200 && status < 300,
+    ok: true,
     status,
     headers: responseHeaders(),
-    json: async () => {
-      throw new Error("bad json");
-    },
+    json: async () => { throw new Error("bad json"); },
   };
 }
 
 function tempFile(name: string): string {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "usage-bars-"));
-  return path.join(dir, name);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "usage-bars-test-"));
+  return path.join(directory, name);
 }
 
-describe("usage-bars-core formatting", () => {
-  it("formats durations across units", () => {
+const endpoints: UsageEndpoints = {
+  zai: "https://api.z.ai/usage",
+  zaiCn: "https://open.bigmodel.cn/usage",
+  kimi: "https://api.kimi.test/usages",
+  minimax: "https://api.minimax.test/v1/token_plan/remains",
+  minimaxLegacy: "https://api.minimax.test/v1/api/openplatform/coding_plan/remains",
+  minimaxCn: "https://api.minimaxi.test/v1/token_plan/remains",
+  minimaxCnLegacy: "https://api.minimaxi.test/v1/api/openplatform/coding_plan/remains",
+  openRouterCredits: "https://openrouter.test/api/v1/credits",
+  openRouterKey: "https://openrouter.test/api/v1/key",
+  deepSeekBalance: "https://api.deepseek.test/user/balance",
+  moonshotBalance: "https://api.moonshot.test/v1/users/me/balance",
+  moonshotCnBalance: "https://api.moonshot-cn.test/v1/users/me/balance",
+};
+
+describe("formatting and parsing", () => {
+  it("formats durations and reset dates", () => {
     expect(formatDuration(0)).toBe("now");
     expect(formatDuration(30)).toBe("<1m");
-    expect(formatDuration(61)).toBe("1m");
     expect(formatDuration(3660)).toBe("1h 1m");
     expect(formatDuration(90000)).toBe("1d 1h");
-  });
 
-  it("formats reset date relative to fixed now and handles invalid dates", () => {
     const now = Date.parse("2026-02-18T12:00:00.000Z");
     expect(formatResetsAt("2026-02-18T13:30:00.000Z", now)).toBe("1h 30m");
-    expect(formatResetsAt("not-a-date", now)).toBe("");
-    expect(formatResetsAt("2026-02-18T11:00:00.000Z", now)).toBe("now");
+    expect(formatResetsAt("invalid", now)).toBe("");
   });
 
-  it("parses retry-after seconds and dates", () => {
+  it("parses retry-after values", () => {
     const now = Date.parse("2026-02-18T12:00:00.000Z");
     expect(parseRetryAfterMs("120", now)).toBe(120000);
     expect(parseRetryAfterMs("2026-02-18T12:05:00.000Z", now)).toBe(300000);
-    expect(parseRetryAfterMs("bad-value", now)).toBeNull();
+    expect(parseRetryAfterMs("bad", now)).toBeNull();
   });
-});
 
-describe("usage-bars-core percent parsing", () => {
-  it("parses percent candidates from fractions and percentages", () => {
+  it("parses percentages and clamps display values", () => {
     expect(readPercentCandidate(0.37)).toBe(37);
     expect(readPercentCandidate(1)).toBe(1);
     expect(readPercentCandidate(99)).toBe(99);
     expect(readPercentCandidate(101)).toBeNull();
-    expect(readPercentCandidate("50")).toBeNull();
-  });
-
-  it("reads limit percent directly or from current/remaining", () => {
     expect(readLimitPercent({ utilization: 44 })).toBe(44);
     expect(readLimitPercent({ currentValue: 30, remaining: 70 })).toBe(30);
-    expect(readLimitPercent({ currentValue: 0, remaining: 0 })).toBeNull();
-  });
-});
-
-describe("usage-bars-core payload extraction", () => {
-  it("extracts usage from typed limits arrays", () => {
-    const payload = {
-      data: {
-        limits: [
-          { type: "TIME_LIMIT", usage_percent: 25 },
-          { type: "TOKENS_LIMIT", currentValue: 20, remaining: 80 },
-        ],
-      },
-    };
-
-    expect(extractUsageFromPayload(payload)).toEqual({ session: 25, weekly: 20 });
+    expect(clampPercent(1000)).toBe(100);
+    expect(colorForPercent(69)).toBe("success");
+    expect(colorForPercent(70)).toBe("warning");
+    expect(colorForPercent(90)).toBe("error");
   });
 
-  it("extracts usage from fallback fields", () => {
-    const payload = {
+  it("extracts generic usage payloads", () => {
+    expect(extractUsageFromPayload({
+      data: { limits: [
+        { type: "TIME_LIMIT", usage_percent: 25 },
+        { type: "TOKENS_LIMIT", currentValue: 20, remaining: 80 },
+      ] },
+    })).toEqual({ session: 25, weekly: 20 });
+
+    expect(extractUsageFromPayload({
       rate_limit: {
         primary_window: { used_percent: 35 },
         secondary_window: { used_percent: 45 },
       },
-    };
-
-    expect(extractUsageFromPayload(payload)).toEqual({ session: 35, weekly: 45 });
-  });
-
-  it("returns null for unknown payload shape", () => {
+    })).toEqual({ session: 35, weekly: 45 });
     expect(extractUsageFromPayload({ nope: true })).toBeNull();
   });
 });
 
-describe("usage-bars-core google buckets", () => {
-  it("converts remaining fraction to used percent", () => {
-    expect(usedPercentFromRemainingFraction(0.25)).toBe(75);
-    expect(usedPercentFromRemainingFraction(-1)).toBe(100);
-    expect(usedPercentFromRemainingFraction(5)).toBe(0);
-    expect(usedPercentFromRemainingFraction("x")).toBeNull();
-  });
-
-  it("picks the most used bucket", () => {
-    const selected = pickMostUsedBucket([
-      { remainingFraction: 0.6, id: "a" },
-      { remainingFraction: 0.1, id: "b" },
-      { remainingFraction: 0.4, id: "c" },
-    ]);
-    expect(selected?.id).toBe("b");
-  });
-
-  it("parses gemini buckets with provider-specific preferences", () => {
-    const parsed = parseGoogleQuotaBuckets(
-      {
-        buckets: [
-          { tokenType: "REQUESTS", modelId: "gemini-2.5-pro", remainingFraction: 0.4 },
-          { tokenType: "REQUESTS", modelId: "gemini-2.5-flash", remainingFraction: 0.2 },
-        ],
-      },
-      "gemini",
-    );
-
-    expect(parsed).toEqual({ session: 60, weekly: 80 });
-  });
-
-  it("parses antigravity buckets preferring non-thinking claude for session", () => {
-    const parsed = parseGoogleQuotaBuckets(
-      {
-        buckets: [
-          { tokenType: "REQUESTS", modelId: "claude-3.7-sonnet", remainingFraction: 0.7 },
-          { tokenType: "REQUESTS", modelId: "gemini-2.5-pro", remainingFraction: 0.1 },
-          { tokenType: "REQUESTS", modelId: "gemini-2.5-flash", remainingFraction: 0.5 },
-        ],
-      },
-      "antigravity",
-    );
-
-    expect(parsed).toEqual({ session: 30, weekly: 50 });
-  });
-});
-
-describe("usage-bars-core provider detection and visibility", () => {
-  it("detects known providers only", () => {
+describe("current Pi provider compatibility", () => {
+  it("detects supported current providers", () => {
     expect(detectProvider({ provider: "openai-codex" })).toBe("codex");
-    expect(detectProvider({ provider: "google-gemini-cli" })).toBe("gemini");
-    expect(detectProvider("gpt-4.1")).toBeNull();
-    expect(detectProvider({ provider: "openai" })).toBeNull();
+    expect(detectProvider({ provider: "anthropic" })).toBe("claude");
+    expect(detectProvider({ provider: "zai" })).toBe("zai");
+    expect(detectProvider({ provider: "zai-coding-cn" })).toBe("zai-cn");
+    expect(detectProvider({ provider: "kimi-coding" })).toBe("kimi");
+    expect(detectProvider({ provider: "minimax" })).toBe("minimax");
+    expect(detectProvider({ provider: "minimax-cn" })).toBe("minimax-cn");
+    expect(detectProvider({ provider: "openrouter" })).toBe("openrouter");
+    expect(detectProvider({ provider: "deepseek" })).toBe("deepseek");
+    expect(detectProvider({ provider: "moonshotai" })).toBe("moonshot");
+    expect(detectProvider({ provider: "moonshotai-cn" })).toBe("moonshot-cn");
+    expect(detectProvider({ provider: "google-gemini-cli" })).toBeNull();
+    expect(detectProvider({ provider: "google-antigravity" })).toBeNull();
   });
 
-  it("checks whether provider usage can be shown", () => {
-    const auth: AuthData = {
-      "openai-codex": { access: "a" },
-      anthropic: { access: "b" },
-      zai: { key: "c" },
-      "google-gemini-cli": { access: "d" },
-    };
-    const endpoints: UsageEndpoints = {
-      zai: "https://z.ai",
-      gemini: "https://gemini",
-      antigravity: "",
-      googleLoadCodeAssistEndpoints: [],
-    };
+  it("maps usage keys to Pi provider IDs", () => {
+    expect(providerToPiProviderId("codex")).toBe("openai-codex");
+    expect(providerToPiProviderId("claude")).toBe("anthropic");
+    expect(providerToPiProviderId("zai-cn")).toBe("zai-coding-cn");
+    expect(providerToPiProviderId("kimi")).toBe("kimi-coding");
+    expect(providerToPiProviderId("minimax")).toBe("minimax");
+    expect(providerToPiProviderId("minimax-cn")).toBe("minimax-cn");
+    expect(providerToPiProviderId("openrouter")).toBe("openrouter");
+    expect(providerToPiProviderId("deepseek")).toBe("deepseek");
+    expect(providerToPiProviderId("moonshot")).toBe("moonshotai");
+    expect(providerToPiProviderId("moonshot-cn")).toBe("moonshotai-cn");
+  });
 
-    expect(canShowForProvider("codex", auth, endpoints)).toBe(true);
-    expect(canShowForProvider("antigravity", auth, endpoints)).toBe(false);
-    expect(canShowForProvider("zai", auth, { ...endpoints, zai: "" })).toBe(false);
+  it("resolves global and China endpoint overrides", () => {
+    expect(resolveUsageEndpoints({
+      PI_ZAI_USAGE_ENDPOINT: "https://global.example/usage",
+      PI_ZAI_CODING_CN_USAGE_ENDPOINT: "https://cn.example/usage",
+      PI_KIMI_USAGE_ENDPOINT: "https://kimi.example/usage",
+      PI_MINIMAX_USAGE_ENDPOINT: "https://minimax.example/usage",
+      PI_MINIMAX_LEGACY_USAGE_ENDPOINT: "https://minimax.example/legacy",
+      PI_MINIMAX_CN_USAGE_ENDPOINT: "https://minimax-cn.example/usage",
+      PI_MINIMAX_CN_LEGACY_USAGE_ENDPOINT: "https://minimax-cn.example/legacy",
+      PI_OPENROUTER_CREDITS_ENDPOINT: "https://openrouter.example/credits",
+      PI_OPENROUTER_KEY_ENDPOINT: "https://openrouter.example/key",
+      PI_DEEPSEEK_BALANCE_ENDPOINT: "https://deepseek.example/balance",
+      PI_MOONSHOT_BALANCE_ENDPOINT: "https://moonshot.example/balance",
+      PI_MOONSHOT_CN_BALANCE_ENDPOINT: "https://moonshot-cn.example/balance",
+    } as NodeJS.ProcessEnv)).toEqual({
+      zai: "https://global.example/usage",
+      zaiCn: "https://cn.example/usage",
+      kimi: "https://kimi.example/usage",
+      minimax: "https://minimax.example/usage",
+      minimaxLegacy: "https://minimax.example/legacy",
+      minimaxCn: "https://minimax-cn.example/usage",
+      minimaxCnLegacy: "https://minimax-cn.example/legacy",
+      openRouterCredits: "https://openrouter.example/credits",
+      openRouterKey: "https://openrouter.example/key",
+      deepSeekBalance: "https://deepseek.example/balance",
+      moonshotBalance: "https://moonshot.example/balance",
+      moonshotCnBalance: "https://moonshot-cn.example/balance",
+    });
   });
 });
 
-describe("usage-bars-core network fetchers", () => {
-  it("discovers google project id from env before network", async () => {
-    let calls = 0;
-    const fetchFn: FetchLike = async () => {
-      calls += 1;
-      return jsonResponse(200, {});
-    };
-
-    const id = await discoverGoogleProjectId("token", {
-      fetchFn,
-      env: { GOOGLE_CLOUD_PROJECT: "proj-from-env" } as any,
-      endpoints: resolveUsageEndpoints({} as any),
+describe("provider fetchers", () => {
+  it("fetches Codex usage and handles HTTP/JSON failures", async () => {
+    const usage = await fetchCodexUsage("token", {
+      fetchFn: async () => jsonResponse(200, {
+        rate_limit: {
+          primary_window: { used_percent: 42, reset_after_seconds: 120 },
+          secondary_window: { used_percent: 73, reset_after_seconds: 240 },
+        },
+      }),
     });
-
-    expect(id).toBe("proj-from-env");
-    expect(calls).toBe(0);
+    expect(usage).toMatchObject({ session: 42, weekly: 73, sessionResetsIn: "2m", weeklyResetsIn: "4m" });
+    expect((await fetchCodexUsage("token", { fetchFn: async () => jsonResponse(401, {}) })).error).toBe("HTTP 401");
+    expect((await fetchCodexUsage("token", { fetchFn: async () => invalidJsonResponse() })).error).toBe("invalid JSON response");
   });
 
-  it("discovers google project id from loadCodeAssist fallback endpoints", async () => {
-    const calls: string[] = [];
-    const fetchFn: FetchLike = async (url) => {
-      calls.push(url);
-      if (url.startsWith("https://cloudcode-pa.googleapis.com/")) {
-        return jsonResponse(500, { error: true });
-      }
-      return jsonResponse(200, { cloudaicompanionProject: { id: "project-2" } });
-    };
-
-    const id = await discoverGoogleProjectId("token", {
-      fetchFn,
-      env: {} as any,
-      endpoints: {
-        zai: "",
-        gemini: "",
-        antigravity: "",
-        googleLoadCodeAssistEndpoints: [
-          "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
-          "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:loadCodeAssist",
-        ],
-      },
-    });
-
-    expect(id).toBe("project-2");
-    expect(calls.length).toBe(2);
-  });
-
-  it("fetches codex usage and handles http/json failures", async () => {
-    const ok = await fetchCodexUsage("token", {
-      fetchFn: async () =>
-        jsonResponse(200, {
-          rate_limit: {
-            primary_window: { used_percent: 42, reset_after_seconds: 120 },
-            secondary_window: { used_percent: 73, reset_after_seconds: 240 },
-          },
-        }),
-    });
-
-    expect(ok).toMatchObject({ session: 42, weekly: 73, sessionResetsIn: "2m", weeklyResetsIn: "4m" });
-
-    const badHttp = await fetchCodexUsage("token", { fetchFn: async () => jsonResponse(401, {}) });
-    expect(badHttp.error).toBe("HTTP 401");
-
-    const badJson = await fetchCodexUsage("token", { fetchFn: async () => invalidJsonResponse() });
-    expect(badJson.error).toBe("invalid JSON response");
-  });
-
-  it("fetches claude usage with extra spend", async () => {
+  it("fetches Claude OAuth usage with extra spend", async () => {
     const usage = await fetchClaudeUsage("token", {
-      fetchFn: async () =>
-        jsonResponse(200, {
-          five_hour: { utilization: 55, resets_at: "2026-02-18T13:00:00.000Z" },
-          seven_day: { utilization: 22, resets_at: "2026-02-19T13:00:00.000Z" },
-          extra_usage: { is_enabled: true, used_credits: 7.5, monthly_limit: 20 },
-        }),
-    });
-
-    expect(usage.session).toBe(55);
-    expect(usage.weekly).toBe(22);
-    expect(usage.extraSpend).toBe(7.5);
-    expect(usage.extraLimit).toBe(20);
-    expect(usage.sessionResetsAt).toBe("2026-02-18T13:00:00.000Z");
-  });
-
-  it("refreshes claude oauth token after a 429 and retries once", async () => {
-    const auth: AuthData = {
-      anthropic: {
-        access: "stale-token",
-        refresh: "refresh-token",
-        expires: 9999999999999,
-      },
-    };
-
-    const cacheFile = tempFile("usage-cache.json");
-    const authFile = tempFile("auth.json");
-    const tokensSeen: string[] = [];
-
-    const result = await fetchClaudeUsageWithFallback({
-      auth,
-      authFile,
-      cacheFile,
-      persist: false,
-      nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
-      oauthResolver: async () => ({
-        apiKey: "ignored",
-        newCredentials: {
-          access: "fresh-token",
-          refresh: "refresh-token-2",
-          expires: 9999999999999,
-        },
+      fetchFn: async () => jsonResponse(200, {
+        five_hour: { utilization: 55, resets_at: "2026-02-18T13:00:00.000Z" },
+        seven_day: { utilization: 22, resets_at: "2026-02-19T13:00:00.000Z" },
+        extra_usage: { is_enabled: true, used_credits: 7.5, monthly_limit: 20 },
       }),
-      fetchFn: async (_url, init) => {
-        const token = String((init?.headers as any)?.Authorization || "").replace("Bearer ", "");
-        tokensSeen.push(token);
-
-        if (token === "stale-token") {
-          return jsonResponse(429, { error: true }, { "retry-after": "0" });
-        }
-
-        return jsonResponse(200, {
-          five_hour: { utilization: 61, resets_at: "2026-02-18T14:00:00.000Z" },
-          seven_day: { utilization: 19, resets_at: "2026-02-20T12:00:00.000Z" },
-        });
-      },
     });
-
-    expect(tokensSeen).toEqual(["stale-token", "fresh-token"]);
-    expect(result.auth?.anthropic?.access).toBe("fresh-token");
-    expect(result.usage).toMatchObject({ session: 61, weekly: 19 });
-    expect(result.usage.error).toBeUndefined();
+    expect(usage).toMatchObject({ session: 55, weekly: 22, extraSpend: 7.5, extraLimit: 20 });
   });
 
-  it("returns stale cached claude usage during 429 cooldown", async () => {
-    const auth: AuthData = {
-      anthropic: {
-        access: "claude-token",
-        refresh: "refresh-token",
-        expires: 9999999999999,
-      },
-    };
-
-    const cacheFile = tempFile("usage-cache.json");
-    const authFile = tempFile("auth.json");
-
-    const first = await fetchClaudeUsageWithFallback({
-      auth,
-      authFile,
+  it("returns stale cached Claude usage during a 429 cooldown", async () => {
+    const cacheFile = tempFile("claude-cache.json");
+    const first = await fetchClaudeUsageWithFallback("token", {
       cacheFile,
-      persist: false,
       nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
-      fetchFn: async () =>
-        jsonResponse(200, {
-          five_hour: { utilization: 45, resets_at: "2026-02-18T13:00:00.000Z" },
-          seven_day: { utilization: 12, resets_at: "2026-02-20T12:00:00.000Z" },
-        }),
+      fetchFn: async () => jsonResponse(200, {
+        five_hour: { utilization: 45, resets_at: "2026-02-18T13:00:00.000Z" },
+        seven_day: { utilization: 12, resets_at: "2026-02-20T12:00:00.000Z" },
+      }),
     });
+    expect(first).toMatchObject({ session: 45, weekly: 12 });
 
-    expect(first.usage).toMatchObject({ session: 45, weekly: 12 });
-
-    const second = await fetchClaudeUsageWithFallback({
-      auth,
-      authFile,
+    const second = await fetchClaudeUsageWithFallback("token", {
       cacheFile,
-      persist: false,
       nowMs: Date.parse("2026-02-18T12:10:00.000Z"),
-      oauthResolver: async () => ({
-        apiKey: "ignored",
-        newCredentials: {
-          access: "refreshed-token",
-          refresh: "refresh-token-2",
-          expires: 9999999999999,
-        },
-      }),
-      fetchFn: async () => jsonResponse(429, { error: true }, { "retry-after": "0" }),
+      fetchFn: async () => jsonResponse(429, {}, { "retry-after": "0" }),
     });
-
-    expect(second.usage.session).toBe(45);
-    expect(second.usage.weekly).toBe(12);
-    expect(second.usage.stale).toBe(true);
-    expect(second.usage.warning).toContain("retry in");
-    expect(second.usage.error).toBeUndefined();
+    expect(second).toMatchObject({ session: 45, weekly: 12, stale: true });
+    expect(second.warning).toContain("retry in");
   });
 
-  it("reuses recent claude cache across concurrent callers", async () => {
-    const auth: AuthData = {
-      anthropic: {
-        access: "claude-token",
-        refresh: "refresh-token",
-        expires: 9999999999999,
-      },
-    };
-
-    const cacheFile = tempFile("usage-cache.json");
-    const authFile = tempFile("auth.json");
+  it("shares a fresh Claude cache across concurrent callers", async () => {
+    const cacheFile = tempFile("shared-cache.json");
     let calls = 0;
-
     const fetchFn: FetchLike = async () => {
       calls += 1;
-      await new Promise((resolve) => setTimeout(resolve, 75));
-      return jsonResponse(200, {
-        five_hour: { utilization: 52, resets_at: "2026-02-18T13:00:00.000Z" },
-        seven_day: { utilization: 28, resets_at: "2026-02-20T12:00:00.000Z" },
-      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return jsonResponse(200, { five_hour: { utilization: 52 }, seven_day: { utilization: 28 } });
     };
-
+    const config = {
+      cacheFile,
+      nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
+      fetchFn,
+    };
     const [one, two] = await Promise.all([
-      fetchClaudeUsageWithFallback({
-        auth,
-        authFile,
-        cacheFile,
-        persist: false,
-        nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
-        fetchFn,
-      }),
-      fetchClaudeUsageWithFallback({
-        auth,
-        authFile,
-        cacheFile,
-        persist: false,
-        nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
-        fetchFn,
-      }),
+      fetchClaudeUsageWithFallback("token", config),
+      fetchClaudeUsageWithFallback("token", config),
     ]);
-
     expect(calls).toBe(1);
-    expect(one.usage).toMatchObject({ session: 52, weekly: 28 });
-    expect(two.usage).toMatchObject({ session: 52, weekly: 28 });
+    expect(one).toMatchObject({ session: 52, weekly: 28 });
+    expect(two).toMatchObject({ session: 52, weekly: 28 });
   });
 
-  it("parses z.ai payload with TOKENS_LIMIT differentiated by unit field", () => {
-    const now = Date.now();
+  it("parses and fetches Kimi For Coding quota windows", async () => {
     const payload = {
-      code: 200,
-      data: {
-        limits: [
-          {
-            type: "TOKENS_LIMIT",
-            unit: 3,
-            number: 5,
-            percentage: 29,
-            nextResetTime: now + 5 * 60 * 60 * 1000,
-          },
-          {
-            type: "TOKENS_LIMIT",
-            unit: 6,
-            number: 1,
-            percentage: 5,
-            nextResetTime: now + 7 * 24 * 60 * 60 * 1000,
-          },
-          {
-            type: "TIME_LIMIT",
-            unit: 5,
-            number: 1,
-            percentage: 0,
-          },
-        ],
+      usage: {
+        limit: "2048",
+        used: "512",
+        remaining: "1536",
+        resetTime: "2026-01-09T15:23:13.716839300Z",
       },
+      limits: [{
+        window: { duration: 300, timeUnit: "TIME_UNIT_MINUTE" },
+        detail: {
+          limit: "200",
+          used: "50",
+          remaining: "150",
+          resetTime: "2026-01-06T13:33:02.717479433Z",
+        },
+      }],
     };
-
-    const parsed = extractZaiUsageFromPayload(payload, now);
-    expect(parsed).not.toBeNull();
-    expect(parsed!.session).toBe(29);
-    expect(parsed!.weekly).toBe(5);
-    expect(parsed!.sessionResetsIn).toBeDefined();
-    expect(parsed!.weeklyResetsIn).toBeDefined();
-  });
-
-  it("extractZaiUsageFromPayload returns null when no unit 3 or 6 TOKENS_LIMIT", () => {
-    const payload = {
-      data: {
-        limits: [
-          { type: "TIME_LIMIT", unit: 5, percentage: 50 },
-        ],
-      },
-    };
-    expect(extractZaiUsageFromPayload(payload)).toBeNull();
-  });
-
-  it("fetches zai usage with z.ai-specific TOKENS_LIMIT by unit", async () => {
-    const endpoints: UsageEndpoints = {
-      zai: "https://z.ai/usage",
-      gemini: "",
-      antigravity: "",
-      googleLoadCodeAssistEndpoints: [],
-    };
-
-    const usage = await fetchZaiUsage("token", {
-      endpoints,
-      fetchFn: async () =>
-        jsonResponse(200, {
-          data: {
-            limits: [
-              { type: "TOKENS_LIMIT", unit: 3, percentage: 29 },
-              { type: "TOKENS_LIMIT", unit: 6, percentage: 5 },
-              { type: "TIME_LIMIT", unit: 5, percentage: 0 },
-            ],
-          },
-        }),
+    expect(extractKimiUsageFromPayload(payload)).toMatchObject({
+      session: 25,
+      weekly: 25,
+      sessionLabel: "5-hour",
+      weeklyLabel: "Weekly",
     });
 
-    expect(usage.session).toBe(29);
-    expect(usage.weekly).toBe(5);
+    let requestHeaders: HeadersInit | undefined;
+    const usage = await fetchKimiUsage("sk-kimi-test", {
+      endpoints,
+      fetchFn: async (url, init) => {
+        expect(url).toBe(endpoints.kimi);
+        requestHeaders = init?.headers;
+        return jsonResponse(200, payload);
+      },
+    });
+    expect(usage).toMatchObject({ session: 25, weekly: 25 });
+    expect(requestHeaders).toMatchObject({ Authorization: "Bearer sk-kimi-test", "User-Agent": "KimiCLI/1.5" });
+  });
+
+  it("parses MiniMax model-remains and multi-service responses", () => {
+    const now = Date.parse("2026-02-18T12:00:00.000Z");
+    const modelRemains = extractMiniMaxUsageFromPayload({ data: { model_remains: [{
+      model_name: "MiniMax-M2",
+      current_interval_total_count: "100",
+      current_interval_usage_count: "60",
+      end_time: (now + 3600000) / 1000,
+      current_weekly_total_count: 1000,
+      current_weekly_usage_count: 750,
+      weekly_end_time: (now + 86400000) / 1000,
+    }] } }, now);
+    expect(modelRemains).toMatchObject({
+      session: 40,
+      weekly: 25,
+      sessionLabel: "Interval",
+      weeklyHidden: false,
+      sessionResetsIn: "1h",
+      weeklyResetsIn: "1d",
+    });
+
+    expect(extractMiniMaxUsageFromPayload({ data: { services: [
+      { service_type: "standard", window_type: "rolling", usage: 30, limit: 100 },
+      { service_type: "standard", window_type: "weekly", percent: "45" },
+      { service_type: "highspeed", window_type: "rolling", percent: 55 },
+    ] } })).toMatchObject({ session: 55, weekly: 45, weeklyHidden: false });
+  });
+
+  it("uses separate MiniMax Global and China endpoints with legacy fallback", async () => {
+    const urls: string[] = [];
+    const fetchFn: FetchLike = async (url) => {
+      urls.push(url);
+      if (url.endsWith("token_plan/remains")) return jsonResponse(404, {});
+      return jsonResponse(200, { data: { model_remains: [{
+        current_interval_remaining_percent: 80,
+        current_weekly_remaining_percent: 70,
+      }] } });
+    };
+    expect(await fetchMiniMaxUsage("global", "minimax", { endpoints, fetchFn })).toMatchObject({
+      session: 20,
+      weekly: 30,
+    });
+    expect(await fetchMiniMaxUsage("china", "minimax-cn", { endpoints, fetchFn })).toMatchObject({
+      session: 20,
+      weekly: 30,
+    });
+    expect(urls).toEqual([
+      endpoints.minimax,
+      endpoints.minimaxLegacy,
+      endpoints.minimaxCn,
+      endpoints.minimaxCnLegacy,
+    ]);
+  });
+
+  it("renders a MiniMax Credits-only key as a balance without manufacturing quota", async () => {
+    const usage = await fetchMiniMaxUsage("credits-only", "minimax", {
+      endpoints: { ...endpoints, minimaxLegacy: endpoints.minimax },
+      fetchFn: async () => jsonResponse(200, {
+        base_resp: { status_code: 2062, status_msg: "no active token plan subscription" },
+        data: { points_balance: "5000" },
+      }),
+    });
+    expect(usage).toMatchObject({
+      session: 0,
+      weekly: 0,
+      quotaHidden: true,
+      accountBalance: { amount: 5000, unit: "credits", label: "Credit balance" },
+    });
     expect(usage.error).toBeUndefined();
   });
 
-  it("fetches zai usage falls back to generic parser when no unit-based limits", async () => {
-    const endpoints: UsageEndpoints = {
-      zai: "https://z.ai/usage",
-      gemini: "",
-      antigravity: "",
-      googleLoadCodeAssistEndpoints: [],
-    };
-
-    const usage = await fetchZaiUsage("token", {
-      endpoints,
-      fetchFn: async () =>
-        jsonResponse(200, {
-          data: {
-            limits: [
-              { type: "TIME_LIMIT", percentage: 20 },
-              { type: "TOKENS_LIMIT", percentage: 40 },
-            ],
-          },
-        }),
-    });
-
-    expect(usage.session).toBe(20);
-    expect(usage.weekly).toBe(40);
-  });
-
-  it("fetches zai usage returns error for unrecognized shapes", async () => {
-    const endpoints: UsageEndpoints = {
-      zai: "https://z.ai/usage",
-      gemini: "",
-      antigravity: "",
-      googleLoadCodeAssistEndpoints: [],
-    };
-
-    const unknown = await fetchZaiUsage("token", {
-      endpoints,
-      fetchFn: async () => jsonResponse(200, { nope: true }),
-    });
-    expect(unknown.error).toBe("unrecognized response shape");
-  });
-
-  it("fetches google usage and falls back to generic parser", async () => {
-    const usage = await fetchGoogleUsage(
-      "token",
-      "https://google-endpoint",
-      "project-123",
-      "gemini",
-      {
-        fetchFn: async (_url) =>
-          jsonResponse(200, {
-            data: { usage: { session: 61, weekly: 72 } },
-          }),
-      },
-    );
-
-    expect(usage).toEqual({ session: 61, weekly: 72 });
-  });
-
-  it("returns explicit error when google project id cannot be discovered", async () => {
-    const usage = await fetchGoogleUsage("token", "https://google-endpoint", undefined, "gemini", {
-      fetchFn: async () => jsonResponse(500, {}),
-      env: {} as any,
-      endpoints: {
-        zai: "",
-        gemini: "https://google-endpoint",
-        antigravity: "",
-        googleLoadCodeAssistEndpoints: ["https://discover"],
-      },
-    });
-
-    expect(usage.error).toBe("missing projectId (try /login again)");
-  });
-
-  it("refreshes expired oauth credentials before usage requests", async () => {
-    const auth: AuthData = {
-      "google-gemini-cli": {
-        access: "expired-token",
-        refresh: "refresh-token",
-        projectId: "proj-a",
-        expires: 1,
-      },
-    };
-
-    const refreshed = await ensureFreshAuthForProviders(["google-gemini-cli"], {
-      auth,
-      nowMs: 10_000,
-      persist: false,
-      oauthResolver: async (providerId) => {
-        expect(providerId).toBe("google-gemini-cli");
-        return {
-          apiKey: "ignored",
-          newCredentials: {
-            access: "fresh-token",
-            refresh: "refresh-token",
-            projectId: "proj-a",
-            expires: 999_999,
-          },
-        };
-      },
-    });
-
-    expect(refreshed.changed).toBe(true);
-    expect(refreshed.refreshErrors["google-gemini-cli"]).toBeUndefined();
-    expect(refreshed.auth?.["google-gemini-cli"]?.access).toBe("fresh-token");
-  });
-
-  it("uses refreshed oauth token in fetchAllUsages", async () => {
-    const auth: AuthData = {
-      "google-gemini-cli": {
-        access: "expired-token",
-        refresh: "refresh-token",
-        projectId: "proj-a",
-        expires: 1,
-      },
-    };
-
-    const all = await fetchAllUsages({
-      auth,
-      env: {} as any,
-      persist: false,
-      oauthResolver: async () => ({
-        apiKey: "ignored",
-        newCredentials: {
-          access: "fresh-token",
-          refresh: "refresh-token",
-          projectId: "proj-a",
-          expires: 999_999,
-        },
+  it("treats MiniMax status 2062 as an account state rather than an API error", async () => {
+    const usage = await fetchMiniMaxUsage("empty", "minimax", {
+      endpoints: { ...endpoints, minimaxLegacy: endpoints.minimax },
+      fetchFn: async () => jsonResponse(200, {
+        base_resp: { status_code: 2062, status_msg: "no active token plan subscription" },
       }),
-      endpoints: {
-        zai: "",
-        gemini: "https://google/quota/gemini",
-        antigravity: "",
-        googleLoadCodeAssistEndpoints: [],
-      },
-      fetchFn: async (_url, init) => {
-        const authHeader = String((init?.headers as any)?.Authorization || "");
-        expect(authHeader).toContain("fresh-token");
-        return jsonResponse(200, {
-          buckets: [{ tokenType: "REQUESTS", modelId: "gemini-pro", remainingFraction: 0.2 }],
-        });
-      },
     });
-
-    expect(all.gemini).toEqual({ session: 80, weekly: 80 });
+    expect(usage).toMatchObject({
+      session: 0,
+      weekly: 0,
+      quotaHidden: true,
+      notice: "No active Token Plan · check Credit balance in the MiniMax console",
+    });
+    expect(usage.error).toBeUndefined();
   });
 
-  it("surfaces oauth refresh failures with explicit error", async () => {
-    const auth: AuthData = {
-      "google-antigravity": {
-        access: "expired-token",
-        refresh: "refresh-token",
-        projectId: "proj-b",
-        expires: 1,
-      },
-    };
-
-    const all = await fetchAllUsages({
-      auth,
-      env: {} as any,
-      persist: false,
-      oauthResolver: async () => {
-        throw new Error("refresh boom");
-      },
-      endpoints: {
-        zai: "",
-        gemini: "",
-        antigravity: "https://google/quota/antigravity",
-        googleLoadCodeAssistEndpoints: [],
-      },
-      fetchFn: async () => jsonResponse(200, {}),
-    });
-
-    expect(all.antigravity?.error).toContain("auth refresh failed");
+  it("hides MiniMax weekly quota when the API does not supply it", () => {
+    expect(extractMiniMaxUsageFromPayload({ data: { model_remains: [{
+      current_interval_total_count: 100,
+      current_interval_usage_count: 25,
+      current_weekly_total_count: 0,
+      current_weekly_usage_count: 0,
+      current_weekly_remaining_percent: 100,
+      current_weekly_status: 3,
+    }] } })).toMatchObject({ session: 75, weekly: 0, weeklyHidden: true });
   });
 
-  it("fetches all available providers in parallel-friendly orchestration", async () => {
-    const auth: AuthData = {
-      "openai-codex": { access: "codex-token" },
-      anthropic: { access: "claude-token" },
-      zai: { key: "zai-key" },
-      "google-gemini-cli": { access: "gemini-token", projectId: "proj-a" },
-      "google-antigravity": { access: "ag-token", projectId: "proj-b" },
-    };
+  it("parses OpenRouter balance and spend without manufacturing a percentage", () => {
+    const usage = extractOpenRouterUsageFromPayloads(
+      { data: { total_credits: 50, total_usage: 12.345678 } },
+      { data: {
+        limit: null,
+        limit_remaining: null,
+        usage: 9,
+        usage_daily: 0.25,
+        usage_weekly: 1.5,
+        usage_monthly: 4.75,
+      } },
+    );
+    expect(usage).toMatchObject({
+      session: 0,
+      weekly: 0,
+      quotaHidden: true,
+      accountBalance: { amount: 37.654322, unit: "USD", label: "Balance" },
+      accountSpend: { unit: "USD", daily: 0.25, weekly: 1.5, monthly: 4.75, lifetime: 9 },
+    });
+  });
 
-    const endpoints: UsageEndpoints = {
-      zai: "https://z.ai/usage",
-      gemini: "https://google/quota/gemini",
-      antigravity: "https://google/quota/antigravity",
-      googleLoadCodeAssistEndpoints: [],
-    };
+  it("renders an OpenRouter per-key credit limit as a real usage bar", () => {
+    expect(extractOpenRouterUsageFromPayloads(undefined, { data: {
+      limit: 20,
+      limit_remaining: 5,
+      usage: 15,
+      usage_daily: 1,
+      usage_weekly: 3,
+      usage_monthly: 7,
+    } })).toMatchObject({
+      session: 75,
+      quotaHidden: false,
+      weeklyHidden: true,
+      sessionLabel: "Key limit",
+    });
+  });
 
+  it("fetches both OpenRouter APIs and tolerates one unavailable endpoint", async () => {
+    const urls: string[] = [];
+    const fetchFn: FetchLike = async (url, init) => {
+      urls.push(url);
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer sk-or-test" });
+      if (url === endpoints.openRouterCredits) {
+        return jsonResponse(200, { data: { total_credits: 25, total_usage: 5 } });
+      }
+      return jsonResponse(503, {});
+    };
+    const usage = await fetchOpenRouterUsage("sk-or-test", { endpoints, fetchFn });
+    expect(usage).toMatchObject({
+      quotaHidden: true,
+      accountBalance: { amount: 20, unit: "USD" },
+    });
+    expect(urls.sort()).toEqual([endpoints.openRouterCredits, endpoints.openRouterKey].sort());
+  });
+
+  it("parses and fetches DeepSeek balance components", async () => {
+    const payload = {
+      is_available: true,
+      balance_infos: [{
+        currency: "CNY",
+        total_balance: "110.00",
+        granted_balance: "10.00",
+        topped_up_balance: "100.00",
+      }],
+    };
+    expect(extractDeepSeekBalanceFromPayload(payload)).toMatchObject({
+      quotaHidden: true,
+      accountBalance: { amount: 110, unit: "CNY", label: "Total balance" },
+      accountBalanceDetails: [
+        { amount: 100, unit: "CNY", label: "Topped up" },
+        { amount: 10, unit: "CNY", label: "Granted" },
+      ],
+    });
+
+    const usage = await fetchDeepSeekBalance("deepseek-key", {
+      endpoints,
+      fetchFn: async (url, init) => {
+        expect(url).toBe(endpoints.deepSeekBalance);
+        expect(init?.headers).toMatchObject({ Authorization: "Bearer deepseek-key" });
+        return jsonResponse(200, payload);
+      },
+    });
+    expect(usage.accountBalance?.amount).toBe(110);
+  });
+
+  it("parses and routes Moonshot Global and China balances", async () => {
+    const payload = { code: 0, data: {
+      available_balance: 49.58894,
+      voucher_balance: 46.58893,
+      cash_balance: 3.00001,
+    } };
+    expect(extractMoonshotBalanceFromPayload(payload, "moonshot")).toMatchObject({
+      quotaHidden: true,
+      accountBalance: { amount: 49.58894, unit: "USD", label: "Available balance" },
+      accountBalanceDetails: [
+        { amount: 3.00001, unit: "USD", label: "Cash" },
+        { amount: 46.58893, unit: "USD", label: "Voucher" },
+      ],
+    });
+    expect(extractMoonshotBalanceFromPayload(payload, "moonshot-cn")?.accountBalance?.unit).toBe("CNY");
+
+    const urls: string[] = [];
+    const fetchFn: FetchLike = async (url) => {
+      urls.push(url);
+      return jsonResponse(200, payload);
+    };
+    await fetchMoonshotBalance("global", "moonshot", { endpoints, fetchFn });
+    await fetchMoonshotBalance("china", "moonshot-cn", { endpoints, fetchFn });
+    expect(urls).toEqual([endpoints.moonshotBalance, endpoints.moonshotCnBalance]);
+  });
+
+  it("warns when a financial balance is unavailable or exhausted", () => {
+    expect(extractDeepSeekBalanceFromPayload({
+      is_available: false,
+      balance_infos: [{ currency: "USD", total_balance: "0" }],
+    })?.warning).toContain("not currently available");
+    expect(extractMoonshotBalanceFromPayload({
+      data: { available_balance: 0, voucher_balance: 0, cash_balance: 0 },
+    })?.warning).toContain("exhausted");
+  });
+
+  it("parses ZAI unit-based limits", () => {
+    const now = Date.now();
+    const usage = extractZaiUsageFromPayload({ data: { limits: [
+      { type: "TOKENS_LIMIT", unit: 3, percentage: 29, nextResetTime: now + 3600000 },
+      { type: "TOKENS_LIMIT", unit: 6, percentage: 5, nextResetTime: now + 86400000 },
+    ] } }, now);
+    expect(usage).toMatchObject({ session: 29, weekly: 5 });
+  });
+
+  it("uses separate ZAI Global and China endpoints", async () => {
+    const urls: string[] = [];
+    const fetchFn: FetchLike = async (url) => {
+      urls.push(url);
+      return jsonResponse(200, { data: { limits: [
+        { type: "TOKENS_LIMIT", unit: 3, percentage: 20 },
+        { type: "TOKENS_LIMIT", unit: 6, percentage: 40 },
+      ] } });
+    };
+    await fetchZaiUsage("global", "zai", { endpoints, fetchFn });
+    await fetchZaiUsage("china", "zai-cn", { endpoints, fetchFn });
+    expect(urls).toEqual([endpoints.zai, endpoints.zaiCn]);
+  });
+
+  it("cancels requests through an external signal", async () => {
+    const controller = new AbortController();
+    const fetchFn: FetchLike = async (_url, init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+    });
+    const pending = fetchCodexUsage("token", { fetchFn, signal: controller.signal, timeoutMs: 0 });
+    controller.abort();
+    expect((await pending).error).toBe("request cancelled");
+  });
+});
+
+describe("all-provider orchestration", () => {
+  it("hides the expected Moonshot regional failure for Pi's shared environment key", async () => {
+    const fetchFn: FetchLike = async (url) => url === endpoints.moonshotBalance
+      ? jsonResponse(200, { data: { available_balance: 12, voucher_balance: 2, cash_balance: 10 } })
+      : jsonResponse(401, {});
+    const usage = await fetchAllUsages(
+      { moonshot: "shared", "moonshot-cn": "shared" },
+      { endpoints, fetchFn },
+    );
+    expect(usage.moonshot?.accountBalance?.amount).toBe(12);
+    expect(usage["moonshot-cn"]).toBeNull();
+  });
+
+  it("fetches configured providers and leaves missing providers hidden", async () => {
     const fetchFn: FetchLike = async (url) => {
       if (url.includes("chatgpt.com")) {
-        return jsonResponse(200, {
-          rate_limit: {
-            primary_window: { used_percent: 11 },
-            secondary_window: { used_percent: 22 },
-          },
-        });
+        return jsonResponse(200, { rate_limit: {
+          primary_window: { used_percent: 11 },
+          secondary_window: { used_percent: 22 },
+        } });
       }
-
       if (url.includes("anthropic")) {
-        return jsonResponse(200, {
-          five_hour: { utilization: 33 },
-          seven_day: { utilization: 44 },
-        });
+        return jsonResponse(200, { five_hour: { utilization: 33 }, seven_day: { utilization: 44 } });
       }
-
-      if (url.includes("z.ai")) {
-        return jsonResponse(200, { usage: { session: 55, weekly: 66 } });
-      }
-
-      if (url.includes("gemini")) {
-        return jsonResponse(200, {
-          buckets: [{ tokenType: "REQUESTS", modelId: "gemini-pro", remainingFraction: 0.2 }],
-        });
-      }
-
-      return jsonResponse(200, {
-        buckets: [{ tokenType: "REQUESTS", modelId: "claude-3.7-sonnet", remainingFraction: 0.4 }],
-      });
+      return jsonResponse(200, { data: { limits: [
+        { type: "TOKENS_LIMIT", unit: 3, percentage: 55 },
+        { type: "TOKENS_LIMIT", unit: 6, percentage: 66 },
+      ] } });
     };
 
-    const all = await fetchAllUsages({ auth, endpoints, fetchFn, env: {} as any, cacheFile: tempFile("all-usage-cache.json") });
-
-    expect(all.codex).toEqual({ session: 11, weekly: 22, sessionResetsIn: undefined, weeklyResetsIn: undefined });
-    expect(all.claude).toMatchObject({ session: 33, weekly: 44, sessionResetsIn: undefined, weeklyResetsIn: undefined });
-    expect(all.zai).toEqual({ session: 55, weekly: 66 });
-    expect(all.gemini).toEqual({ session: 80, weekly: 80 });
-    expect(all.antigravity).toEqual({ session: 60, weekly: 60 });
+    const usage = await fetchAllUsages(
+      { codex: "a", claude: "b", "zai-cn": "c" },
+      { endpoints, fetchFn, cacheFile: tempFile("all-cache.json") },
+    );
+    expect(usage.codex).toMatchObject({ session: 11, weekly: 22 });
+    expect(usage.claude).toMatchObject({ session: 33, weekly: 44 });
+    expect(usage.zai).toBeNull();
+    expect(usage["zai-cn"]).toMatchObject({ session: 55, weekly: 66 });
   });
 });

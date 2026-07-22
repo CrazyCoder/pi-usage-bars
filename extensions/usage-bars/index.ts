@@ -1,14 +1,11 @@
-/**
- * Usage Extension - Minimal API usage indicator for pi
- *
- * Shows Codex (OpenAI), Anthropic (Claude), Z.AI, and optionally
- * Google Gemini CLI / Antigravity usage as color-coded percentages
- * in the footer status bar.
- */
+/** Quota, balance, and spend indicators for providers supported by current Pi releases. */
 
 import {
-  type ExtensionAPI,
   DynamicBorder,
+  type ExtensionAPI,
+  type ExtensionContext,
+  type KeybindingsManager,
+  type Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
   Container,
@@ -16,58 +13,119 @@ import {
   Spacer,
   Text,
   type Focusable,
+  type TUI,
 } from "@earendil-works/pi-tui";
 import {
-  canShowForProvider,
   clampPercent,
   colorForPercent,
   detectProvider,
   fetchAllUsages,
   fetchClaudeUsageWithFallback,
   fetchCodexUsage,
-  fetchGoogleUsage,
+  fetchDeepSeekBalance,
+  fetchKimiUsage,
+  fetchMiniMaxUsage,
+  fetchMoonshotBalance,
+  fetchOpenRouterUsage,
   fetchZaiUsage,
-  ensureFreshAuthForProviders,
-  providerToOAuthProviderId,
-  readAuth,
+  providerToPiProviderId,
   resolveUsageEndpoints,
+  type AccountBalance,
+  type AccountSpend,
   type ProviderKey,
   type UsageByProvider,
   type UsageData,
+  type UsageTokens,
 } from "./core";
 
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
 const STATUS_KEY = "usage-bars";
+const PROVIDERS: readonly ProviderKey[] = [
+  "codex",
+  "claude",
+  "zai",
+  "zai-cn",
+  "kimi",
+  "minimax",
+  "minimax-cn",
+  "openrouter",
+  "deepseek",
+  "moonshot",
+  "moonshot-cn",
+];
 
 const PROVIDER_LABELS: Record<ProviderKey, string> = {
   codex: "Codex",
   claude: "Claude",
-  zai: "Z.AI",
-  gemini: "Gemini",
-  antigravity: "Antigravity",
+  zai: "ZAI Coding Plan (Global)",
+  "zai-cn": "ZAI Coding Plan (China)",
+  kimi: "Kimi For Coding",
+  minimax: "MiniMax Coding Plan (Global)",
+  "minimax-cn": "MiniMax Coding Plan (China)",
+  openrouter: "OpenRouter",
+  deepseek: "DeepSeek",
+  moonshot: "Moonshot/Kimi API (Global)",
+  "moonshot-cn": "Moonshot/Kimi API (China)",
 };
+
+function formatFinancialAmount(amount: number, unit: string): string {
+  if (/^[A-Z]{3}$/.test(unit)) {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: unit,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 5,
+    }).format(amount);
+  }
+  const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(amount);
+  return `${formatted} ${unit}`;
+}
+
+function formatAccountBalance(balance: AccountBalance): string {
+  return `${balance.label} · ${formatFinancialAmount(balance.amount, balance.unit)}`;
+}
+
+function formatAccountSpend(spend: AccountSpend): string {
+  const values = [
+    spend.daily === undefined ? undefined : `today ${formatFinancialAmount(spend.daily, spend.unit)}`,
+    spend.weekly === undefined ? undefined : `week ${formatFinancialAmount(spend.weekly, spend.unit)}`,
+    spend.monthly === undefined ? undefined : `month ${formatFinancialAmount(spend.monthly, spend.unit)}`,
+  ].filter((value): value is string => Boolean(value));
+  if (values.length === 0 && spend.lifetime !== undefined) {
+    values.push(`lifetime ${formatFinancialAmount(spend.lifetime, spend.unit)}`);
+  }
+  return `Spent · ${values.join(" · ")}`;
+}
 
 interface SubscriptionItem {
   name: string;
   provider: ProviderKey;
-  data: UsageData | null;
+  data: UsageData;
   isActive: boolean;
 }
 
+interface CredentialResolution {
+  token?: string;
+  error?: string;
+}
+
 class UsageSelectorComponent extends Container implements Focusable {
-  private searchInput: Input;
-  private listContainer: Container;
-  private hintText: Text;
-  private tui: any;
-  private theme: any;
-  private keybindings: any;
-  private onCancelCallback: () => void;
+  private readonly searchInput: Input;
+  private readonly listContainer: Container;
+  private readonly hintText: Text;
+  private readonly requestController = new AbortController();
+  private readonly tui: TUI;
+  private readonly theme: Theme;
+  private readonly keybindings: KeybindingsManager;
+  private readonly onCancelCallback: () => void;
+  private readonly activeProvider: ProviderKey | null;
+  private readonly fetchAllFn: (signal: AbortSignal) => Promise<UsageByProvider>;
   private allItems: SubscriptionItem[] = [];
   private filteredItems: SubscriptionItem[] = [];
   private selectedIndex = 0;
   private loading = true;
-  private activeProvider: ProviderKey | null;
-  private fetchAllFn: () => Promise<UsageByProvider>;
+  private hint: "loading" | "ready" | "error" = "loading";
+  private disposed = false;
   private _focused = false;
 
   get focused(): boolean {
@@ -80,482 +138,519 @@ class UsageSelectorComponent extends Container implements Focusable {
   }
 
   constructor(
-    tui: any,
-    theme: any,
+    tui: TUI,
+    theme: Theme,
+    keybindings: KeybindingsManager,
     activeProvider: ProviderKey | null,
-    fetchAll: () => Promise<UsageByProvider>,
+    fetchAll: (signal: AbortSignal) => Promise<UsageByProvider>,
     onCancel: () => void,
-    keybindings: any,
   ) {
     super();
     this.tui = tui;
     this.theme = theme;
+    this.keybindings = keybindings;
     this.activeProvider = activeProvider;
     this.fetchAllFn = fetchAll;
     this.onCancelCallback = onCancel;
-    this.keybindings = keybindings;
 
-    this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
+    this.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
     this.addChild(new Spacer(1));
-
-    this.hintText = new Text(theme.fg("dim", "Fetching usage from all providers…"), 0, 0);
+    this.hintText = new Text("", 0, 0);
     this.addChild(this.hintText);
     this.addChild(new Spacer(1));
-
     this.searchInput = new Input();
     this.addChild(this.searchInput);
     this.addChild(new Spacer(1));
-
     this.listContainer = new Container();
     this.addChild(this.listContainer);
     this.addChild(new Spacer(1));
+    this.addChild(new DynamicBorder((text: string) => theme.fg("accent", text)));
 
-    this.addChild(new DynamicBorder((s: string) => theme.fg("accent", s)));
-
-    this.fetchAllFn()
-      .then((results) => {
-        this.loading = false;
-        this.buildItems(results);
-        this.updateList();
-        this.hintText.setText(
-          theme.fg("muted", "Only showing providers with credentials. ") +
-            theme.fg("dim", "✓ = active provider"),
-        );
-        this.tui.requestRender();
-      })
-      .catch(() => {
-        this.loading = false;
-        this.hintText.setText(theme.fg("error", "Failed to fetch usage data"));
-        this.tui.requestRender();
-      });
-
+    this.updateHint();
     this.updateList();
+    void this.load();
   }
 
-  private buildItems(results: UsageByProvider) {
-    const providers: Array<{ key: ProviderKey; name: string }> = [
-      { key: "codex", name: "Codex" },
-      { key: "claude", name: "Claude" },
-      { key: "zai", name: "Z.AI" },
-      { key: "gemini", name: "Gemini" },
-      { key: "antigravity", name: "Antigravity" },
-    ];
-
-    this.allItems = [];
-    for (const p of providers) {
-      if (results[p.key] !== null) {
-        this.allItems.push({
-          name: p.name,
-          provider: p.key,
-          data: results[p.key],
-          isActive: this.activeProvider === p.key,
-        });
-      }
+  private async load(): Promise<void> {
+    try {
+      const results = await this.fetchAllFn(this.requestController.signal);
+      if (this.disposed || this.requestController.signal.aborted) return;
+      this.loading = false;
+      this.hint = "ready";
+      this.buildItems(results);
+    } catch {
+      if (this.disposed || this.requestController.signal.aborted) return;
+      this.loading = false;
+      this.hint = "error";
     }
+    this.updateHint();
+    this.updateList();
+    this.tui.requestRender();
+  }
 
+  private updateHint(): void {
+    if (this.hint === "loading") {
+      this.hintText.setText(this.theme.fg("dim", "Fetching quota, balance, and spend from configured providers…"));
+    } else if (this.hint === "error") {
+      this.hintText.setText(this.theme.fg("error", "Failed to fetch usage data"));
+    } else {
+      this.hintText.setText(
+        this.theme.fg("muted", "Only showing configured usage providers. ") +
+          this.theme.fg("dim", "✓ = active provider"),
+      );
+    }
+  }
+
+  private buildItems(results: UsageByProvider): void {
+    this.allItems = PROVIDERS.flatMap((provider) => {
+      const data = results[provider];
+      return data
+        ? [{
+            name: PROVIDER_LABELS[provider],
+            provider,
+            data,
+            isActive: this.activeProvider === provider,
+          }]
+        : [];
+    });
     this.filteredItems = this.allItems;
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
   }
 
-  private filterItems(query: string) {
-    if (!query) {
-      this.filteredItems = this.allItems;
-    } else {
-      const q = query.toLowerCase();
-      this.filteredItems = this.allItems.filter(
-        (item) => item.name.toLowerCase().includes(q) || item.provider.toLowerCase().includes(q),
-      );
-    }
+  private filterItems(query: string): void {
+    const normalized = query.trim().toLowerCase();
+    this.filteredItems = normalized
+      ? this.allItems.filter((item) =>
+          item.name.toLowerCase().includes(normalized) || item.provider.includes(normalized))
+      : this.allItems;
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
   }
 
-  private renderBar(pct: number, width = 16): string {
-    const value = clampPercent(pct);
+  private renderBar(percent: number, width = 16): string {
+    const value = clampPercent(percent);
     const filled = Math.round((value / 100) * width);
-    const color = colorForPercent(value);
-    const full = "█".repeat(Math.max(0, filled));
-    const empty = "░".repeat(Math.max(0, width - filled));
-    return this.theme.fg(color, full) + this.theme.fg("dim", empty);
+    return this.theme.fg(colorForPercent(value), "█".repeat(filled)) +
+      this.theme.fg("dim", "░".repeat(width - filled));
   }
 
-  private renderItem(item: SubscriptionItem, isSelected: boolean) {
-    const t = this.theme;
-    const pointer = isSelected ? t.fg("accent", "→ ") : "  ";
-    const activeBadge = item.isActive ? t.fg("success", " ✓") : "";
-    const name = isSelected ? t.fg("accent", t.bold(item.name)) : item.name;
-
+  private renderItem(item: SubscriptionItem, selected: boolean): void {
+    const theme = this.theme;
+    const pointer = selected ? theme.fg("accent", "→ ") : "  ";
+    const activeBadge = item.isActive ? theme.fg("success", " ✓") : "";
+    const name = selected ? theme.fg("accent", theme.bold(item.name)) : item.name;
     this.listContainer.addChild(new Text(`${pointer}${name}${activeBadge}`, 0, 0));
 
     const indent = "    ";
-
-    if (!item.data) {
-      this.listContainer.addChild(new Text(indent + t.fg("dim", "No credentials"), 0, 0));
-    } else if (item.data.error) {
-      this.listContainer.addChild(new Text(indent + t.fg("error", item.data.error), 0, 0));
+    if (item.data.error) {
+      this.listContainer.addChild(new Text(indent + theme.fg("error", item.data.error), 0, 0));
     } else {
       const session = clampPercent(item.data.session);
       const weekly = clampPercent(item.data.weekly);
-
       const sessionReset = item.data.sessionResetsIn
-        ? t.fg("dim", `  resets in ${item.data.sessionResetsIn}`)
+        ? theme.fg("dim", `  resets in ${item.data.sessionResetsIn}`)
         : "";
       const weeklyReset = item.data.weeklyResetsIn
-        ? t.fg("dim", `  resets in ${item.data.weeklyResetsIn}`)
+        ? theme.fg("dim", `  resets in ${item.data.weeklyResetsIn}`)
         : "";
+      const sessionLabel = (item.data.sessionLabel ?? "Session").slice(0, 9).padEnd(10);
+      const weeklyLabel = (item.data.weeklyLabel ?? "Weekly").slice(0, 9).padEnd(10);
 
-      this.listContainer.addChild(
-        new Text(
-          indent +
-            t.fg("muted", "Session  ") +
-            this.renderBar(session) +
-            " " +
-            t.fg(colorForPercent(session), `${session}%`.padStart(4)) +
-            sessionReset,
+      if (!item.data.quotaHidden) {
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("muted", sessionLabel) + this.renderBar(session) + " " +
+            theme.fg(colorForPercent(session), `${session}%`.padStart(4)) + sessionReset,
           0,
           0,
-        ),
-      );
-
-      this.listContainer.addChild(
-        new Text(
-          indent +
-            t.fg("muted", "Weekly   ") +
-            this.renderBar(weekly) +
-            " " +
-            t.fg(colorForPercent(weekly), `${weekly}%`.padStart(4)) +
-            weeklyReset,
+        ));
+        if (!item.data.weeklyHidden) {
+          this.listContainer.addChild(new Text(
+            indent + theme.fg("muted", weeklyLabel) + this.renderBar(weekly) + " " +
+              theme.fg(colorForPercent(weekly), `${weekly}%`.padStart(4)) + weeklyReset,
+            0,
+            0,
+          ));
+        }
+      }
+      if (item.data.accountBalance) {
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("muted", formatAccountBalance(item.data.accountBalance)),
           0,
           0,
-        ),
-      );
+        ));
+      }
+      for (const balance of item.data.accountBalanceDetails ?? []) {
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("dim", formatAccountBalance(balance)),
+          0,
+          0,
+        ));
+      }
+      if (item.data.accountSpend) {
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("muted", formatAccountSpend(item.data.accountSpend)),
+          0,
+          0,
+        ));
+      }
+      if (item.data.notice) {
+        this.listContainer.addChild(new Text(indent + theme.fg("muted", item.data.notice), 0, 0));
+      }
 
       if (typeof item.data.extraSpend === "number" && typeof item.data.extraLimit === "number") {
-        this.listContainer.addChild(
-          new Text(
-            indent +
-              t.fg("muted", "Extra    ") +
-              t.fg("dim", `$${item.data.extraSpend.toFixed(2)} / $${item.data.extraLimit}`),
-            0,
-            0,
-          ),
-        );
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("muted", "Extra    ") +
+            theme.fg("dim", `$${item.data.extraSpend.toFixed(2)} / $${item.data.extraLimit}`),
+          0,
+          0,
+        ));
       }
-
       if (item.data.warning) {
-        this.listContainer.addChild(new Text(indent + t.fg("warning", `⚠ ${item.data.warning}`), 0, 0));
+        this.listContainer.addChild(new Text(indent + theme.fg("warning", `⚠ ${item.data.warning}`), 0, 0));
       }
     }
-
     this.listContainer.addChild(new Spacer(1));
   }
 
-  private updateList() {
+  private updateList(): void {
     this.listContainer.clear();
-
     if (this.loading) {
       this.listContainer.addChild(new Text(this.theme.fg("muted", "  Loading…"), 0, 0));
       return;
     }
-
     if (this.filteredItems.length === 0) {
-      this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching providers"), 0, 0));
+      this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching configured providers"), 0, 0));
       return;
     }
+    this.filteredItems.forEach((item, index) => this.renderItem(item, index === this.selectedIndex));
+  }
 
-    for (let i = 0; i < this.filteredItems.length; i++) {
-      this.renderItem(this.filteredItems[i]!, i === this.selectedIndex);
-    }
+  private refresh(): void {
+    this.updateList();
+    this.tui.requestRender();
   }
 
   handleInput(keyData: string): void {
     if (this.keybindings.matches(keyData, "tui.select.up")) {
-      if (this.filteredItems.length === 0) return;
-      this.selectedIndex =
-        this.selectedIndex === 0 ? this.filteredItems.length - 1 : this.selectedIndex - 1;
-      this.updateList();
+      if (this.filteredItems.length > 0) {
+        this.selectedIndex = this.selectedIndex === 0
+          ? this.filteredItems.length - 1
+          : this.selectedIndex - 1;
+        this.refresh();
+      }
       return;
     }
-
     if (this.keybindings.matches(keyData, "tui.select.down")) {
-      if (this.filteredItems.length === 0) return;
-      this.selectedIndex =
-        this.selectedIndex === this.filteredItems.length - 1 ? 0 : this.selectedIndex + 1;
-      this.updateList();
+      if (this.filteredItems.length > 0) {
+        this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1
+          ? 0
+          : this.selectedIndex + 1;
+        this.refresh();
+      }
       return;
     }
-
-    if (this.keybindings.matches(keyData, "tui.select.cancel") || this.keybindings.matches(keyData, "tui.select.confirm")) {
+    if (
+      this.keybindings.matches(keyData, "tui.select.cancel") ||
+      this.keybindings.matches(keyData, "tui.select.confirm")
+    ) {
       this.onCancelCallback();
       return;
     }
 
     this.searchInput.handleInput(keyData);
     this.filterItems(this.searchInput.getValue());
+    this.refresh();
+  }
+
+  override invalidate(): void {
+    super.invalidate();
+    this.updateHint();
     this.updateList();
+  }
+
+  dispose(): void {
+    this.disposed = true;
+    this.requestController.abort();
   }
 }
 
 interface UsageState extends UsageByProvider {
-  lastPoll: number;
   activeProvider: ProviderKey | null;
+  available: Partial<Record<ProviderKey, boolean>>;
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI): void {
   const endpoints = resolveUsageEndpoints();
   const state: UsageState = {
     codex: null,
     claude: null,
     zai: null,
-    gemini: null,
-    antigravity: null,
-    lastPoll: 0,
+    "zai-cn": null,
+    kimi: null,
+    minimax: null,
+    "minimax-cn": null,
+    openrouter: null,
+    deepseek: null,
+    moonshot: null,
+    "moonshot-cn": null,
     activeProvider: null,
+    available: {},
   };
 
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let pollInFlight: Promise<void> | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let pollInFlight: Promise<void> | undefined;
   let pollQueued = false;
-  let ctx: any = null;
+  let currentContext: ExtensionContext | undefined;
+  let sessionController: AbortController | undefined;
 
-  function renderPercent(theme: any, value: number): string {
-    const v = clampPercent(value);
-    return theme.fg(colorForPercent(v), `${v}%`);
-  }
+  const renderPercent = (theme: Theme, value: number) => {
+    const percent = clampPercent(value);
+    return theme.fg(colorForPercent(percent), `${percent}%`);
+  };
 
-  function renderBar(theme: any, value: number): string {
-    const v = clampPercent(value);
+  const renderBar = (theme: Theme, value: number) => {
+    const percent = clampPercent(value);
     const width = 8;
-    const filled = Math.round((v / 100) * width);
-    const full = "█".repeat(Math.max(0, Math.min(width, filled)));
-    const empty = "░".repeat(Math.max(0, width - filled));
-    return theme.fg(colorForPercent(v), full) + theme.fg("dim", empty);
-  }
+    const filled = Math.round((percent / 100) * width);
+    return theme.fg(colorForPercent(percent), "█".repeat(filled)) +
+      theme.fg("dim", "░".repeat(width - filled));
+  };
 
-  function pickDataForProvider(provider: ProviderKey | null): UsageData | null {
-    if (!provider) return null;
-    return state[provider];
-  }
-
-  function updateStatus() {
-    const active = state.activeProvider;
-    const data = pickDataForProvider(active);
-
-    if (data && !data.error) {
-      pi.events.emit("usage:update", {
-        session: data.session,
-        weekly: data.weekly,
-        sessionResetsIn: data.sessionResetsIn,
-        weeklyResetsIn: data.weeklyResetsIn,
-      });
-    }
-
-    if (!ctx?.hasUI) return;
-
-    if (!active) {
+  function updateStatus(): void {
+    const ctx = currentContext;
+    if (!ctx || ctx.mode !== "tui") return;
+    const provider = state.activeProvider;
+    if (!provider || state.available[provider] === false) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
 
-    const auth = readAuth();
-    if (!canShowForProvider(active, auth, endpoints)) {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-      return;
-    }
-
+    const data = state[provider];
     const theme = ctx.ui.theme;
-    const label = PROVIDER_LABELS[active];
-
+    const label = PROVIDER_LABELS[provider];
     if (!data) {
       ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", `${label} usage: loading…`));
       return;
     }
-
     if (data.error) {
       ctx.ui.setStatus(STATUS_KEY, theme.fg("warning", `${label} usage unavailable (${data.error})`));
+      return;
+    }
+    if (data.quotaHidden) {
+      const financial = [
+        data.accountBalance ? formatAccountBalance(data.accountBalance) : undefined,
+        data.accountSpend?.monthly === undefined
+          ? undefined
+          : `Month · ${formatFinancialAmount(data.accountSpend.monthly, data.accountSpend.unit)}`,
+      ].filter((value): value is string => Boolean(value));
+      const summary = financial.length > 0 ? financial.join(" · ") : data.notice;
+      ctx.ui.setStatus(
+        STATUS_KEY,
+        summary ? theme.fg("dim", `${label} `) + theme.fg("muted", summary) : undefined,
+      );
       return;
     }
 
     const session = clampPercent(data.session);
     const weekly = clampPercent(data.weekly);
-
-    const sessionReset = data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : "";
-    const weeklyReset = data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : "";
-    const staleSuffix = data.stale ? theme.fg("warning", " stale") : "";
-    const warningSuffix = data.warning && !data.stale ? theme.fg("warning", " ⚠") : "";
-
+    const sessionPrefix = data.sessionLabel === "5-hour"
+      ? "5h "
+      : data.sessionLabel === "Interval"
+        ? "I "
+        : data.sessionLabel === "Key limit"
+          ? "L "
+          : "S ";
+    const weeklyStatus = data.weeklyHidden
+      ? ""
+      : theme.fg("muted", " W ") + renderBar(theme, weekly) + " " + renderPercent(theme, weekly) +
+        (data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : "");
     const status =
       theme.fg("dim", `${label} `) +
-      theme.fg("muted", "S ") +
-      renderBar(theme, session) +
-      " " +
-      renderPercent(theme, session) +
-      sessionReset +
-      theme.fg("muted", " W ") +
-      renderBar(theme, weekly) +
-      " " +
-      renderPercent(theme, weekly) +
-      weeklyReset +
-      staleSuffix +
-      warningSuffix;
-
+      theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, session) +
+      (data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : "") +
+      weeklyStatus +
+      (data.accountBalance ? theme.fg("muted", ` · ${formatAccountBalance(data.accountBalance)}`) : "") +
+      (data.accountSpend?.monthly === undefined
+        ? ""
+        : theme.fg("muted", ` · Month ${formatFinancialAmount(data.accountSpend.monthly, data.accountSpend.unit)}`)) +
+      (data.stale ? theme.fg("warning", " stale") : "") +
+      (data.warning && !data.stale ? theme.fg("warning", " ⚠") : "");
     ctx.ui.setStatus(STATUS_KEY, status);
   }
 
-  function updateProviderFrom(modelLike: any): boolean {
+  function updateProviderFrom(model: ExtensionContext["model"]): boolean {
     const previous = state.activeProvider;
-    state.activeProvider = detectProvider(modelLike);
-
+    state.activeProvider = detectProvider(model);
     if (previous !== state.activeProvider) {
       updateStatus();
       return true;
     }
-
     return false;
   }
 
-  async function runPoll() {
-    let auth = readAuth();
-    const active = state.activeProvider;
+  async function resolveCredential(ctx: ExtensionContext, provider: ProviderKey): Promise<CredentialResolution> {
+    const providerId = providerToPiProviderId(provider);
+    if (!ctx.modelRegistry.getProvider(providerId)) return {};
+    const status = ctx.modelRegistry.getProviderAuthStatus(providerId);
+    if (!status.configured) return {};
 
-    const setActiveError = (message: string) => {
-      if (!active) return;
-      state[active] = { session: 0, weekly: 0, error: message };
-    };
+    try {
+      const resolved = await ctx.modelRegistry.getProviderAuth(providerId);
+      if (provider === "claude" && resolved?.source !== "OAuth") return {};
+      const token = resolved?.auth.apiKey;
+      return token ? { token } : { error: "configured authentication did not resolve a token" };
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
 
-    if (!canShowForProvider(active, auth, endpoints)) {
-      state.lastPoll = Date.now();
+  async function fetchProvider(
+    ctx: ExtensionContext,
+    provider: ProviderKey,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const credential = await resolveCredential(ctx, provider);
+    if (signal.aborted) return;
+    state.available[provider] = Boolean(credential.token || credential.error);
+    if (credential.error) {
+      state[provider] = { session: 0, weekly: 0, error: `auth resolution failed (${credential.error})` };
+      return;
+    }
+    if (!credential.token) {
+      state[provider] = null;
+      return;
+    }
+
+    if (provider === "codex") state.codex = await fetchCodexUsage(credential.token, { signal });
+    if (provider === "claude") state.claude = await fetchClaudeUsageWithFallback(credential.token, { signal });
+    if (provider === "zai") state.zai = await fetchZaiUsage(credential.token, "zai", { endpoints, signal });
+    if (provider === "zai-cn") state["zai-cn"] = await fetchZaiUsage(credential.token, "zai-cn", { endpoints, signal });
+    if (provider === "kimi") state.kimi = await fetchKimiUsage(credential.token, { endpoints, signal });
+    if (provider === "minimax") {
+      state.minimax = await fetchMiniMaxUsage(credential.token, "minimax", { endpoints, signal });
+    }
+    if (provider === "minimax-cn") {
+      state["minimax-cn"] = await fetchMiniMaxUsage(credential.token, "minimax-cn", { endpoints, signal });
+    }
+    if (provider === "openrouter") {
+      state.openrouter = await fetchOpenRouterUsage(credential.token, { endpoints, signal });
+    }
+    if (provider === "deepseek") {
+      state.deepseek = await fetchDeepSeekBalance(credential.token, { endpoints, signal });
+    }
+    if (provider === "moonshot") {
+      state.moonshot = await fetchMoonshotBalance(credential.token, "moonshot", { endpoints, signal });
+    }
+    if (provider === "moonshot-cn") {
+      state["moonshot-cn"] = await fetchMoonshotBalance(credential.token, "moonshot-cn", { endpoints, signal });
+    }
+  }
+
+  async function runPoll(): Promise<void> {
+    const ctx = currentContext;
+    const signal = sessionController?.signal;
+    const provider = state.activeProvider;
+    if (!ctx || !signal || signal.aborted || ctx.mode !== "tui" || !provider) {
       updateStatus();
       return;
     }
 
-    const oauthProviderId = providerToOAuthProviderId(active);
-    if (oauthProviderId && auth) {
-      const refreshed = await ensureFreshAuthForProviders([oauthProviderId], { auth });
-      auth = refreshed.auth;
-
-      const refreshError = refreshed.refreshErrors[oauthProviderId];
-      if (refreshError) {
-        setActiveError(`auth refresh failed (${refreshError})`);
-        state.lastPoll = Date.now();
-        updateStatus();
-        return;
-      }
-    }
-
-    if (!auth) {
-      state.lastPoll = Date.now();
-      updateStatus();
-      return;
-    }
-
-    if (active === "codex") {
-      const access = auth["openai-codex"]?.access;
-      state.codex = access
-        ? await fetchCodexUsage(access)
-        : { session: 0, weekly: 0, error: "missing access token (try /login again)" };
-    } else if (active === "claude") {
-      state.claude = auth.anthropic?.access || auth.anthropic?.refresh
-        ? (await fetchClaudeUsageWithFallback({ auth })).usage
-        : { session: 0, weekly: 0, error: "missing access token (try /login again)" };
-    } else if (active === "zai") {
-      const token = auth.zai?.access || auth.zai?.key;
-      state.zai = token
-        ? await fetchZaiUsage(token, { endpoints })
-        : { session: 0, weekly: 0, error: "missing token (try /login again)" };
-    } else if (active === "gemini") {
-      const creds = auth["google-gemini-cli"];
-      state.gemini = creds?.access
-        ? await fetchGoogleUsage(creds.access, endpoints.gemini, creds.projectId, "gemini", { endpoints })
-        : { session: 0, weekly: 0, error: "missing access token (try /login again)" };
-    } else if (active === "antigravity") {
-      const creds = auth["google-antigravity"];
-      state.antigravity = creds?.access
-        ? await fetchGoogleUsage(creds.access, endpoints.antigravity, creds.projectId, "antigravity", { endpoints })
-        : { session: 0, weekly: 0, error: "missing access token (try /login again)" };
-    }
-
-    state.lastPoll = Date.now();
+    await fetchProvider(ctx, provider, signal);
+    if (signal.aborted) return;
+    const data = state[provider];
+    if (data && !data.error) pi.events.emit("usage:update", { provider, ...data });
     updateStatus();
   }
 
-  async function poll() {
+  async function poll(): Promise<void> {
     if (pollInFlight) {
       pollQueued = true;
-      await pollInFlight;
-      return;
+      return pollInFlight;
     }
-
     do {
       pollQueued = false;
-      pollInFlight = runPoll()
-        .catch(() => {
-          // Never crash extension event handlers on transient polling errors.
-        })
-        .finally(() => {
-          pollInFlight = null;
-        });
-
+      pollInFlight = runPoll().catch(() => undefined).finally(() => {
+        pollInFlight = undefined;
+      });
       await pollInFlight;
-    } while (pollQueued);
+    } while (pollQueued && !sessionController?.signal.aborted);
   }
 
-  pi.on("session_start", async (_event, _ctx) => {
-    ctx = _ctx;
-    updateProviderFrom(_ctx.model);
+  async function fetchAllForContext(ctx: ExtensionContext, signal: AbortSignal): Promise<UsageByProvider> {
+    const resolutions = await Promise.all(PROVIDERS.map(async (provider) =>
+      [provider, await resolveCredential(ctx, provider)] as const));
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    await poll();
+    const tokens: UsageTokens = {};
+    const authErrors: Partial<Record<ProviderKey, string>> = {};
+    for (const [provider, resolution] of resolutions) {
+      if (resolution.token) tokens[provider] = resolution.token;
+      if (resolution.error) authErrors[provider] = resolution.error;
+    }
+
+    const results = await fetchAllUsages(tokens, { endpoints, signal });
+    for (const provider of PROVIDERS) {
+      const error = authErrors[provider];
+      if (error) results[provider] = { session: 0, weekly: 0, error: `auth resolution failed (${error})` };
+    }
+    return results;
+  }
+
+  pi.on("session_start", (_event, ctx) => {
+    currentContext = ctx;
+    sessionController?.abort();
+    sessionController = new AbortController();
+    updateProviderFrom(ctx.model);
 
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(() => {
-      void poll();
-    }, POLL_INTERVAL_MS);
+    pollTimer = undefined;
+    if (ctx.mode !== "tui") return;
+
+    updateStatus();
+    void poll();
+    pollTimer = setInterval(() => void poll(), POLL_INTERVAL_MS);
   });
 
-  pi.on("session_shutdown", async (_event, _ctx) => {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
-    }
-
-    if (_ctx?.hasUI) {
-      _ctx.ui.setStatus(STATUS_KEY, undefined);
-    }
+  pi.on("session_shutdown", (_event, ctx) => {
+    sessionController?.abort();
+    sessionController = undefined;
+    pollQueued = false;
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = undefined;
+    if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
+    currentContext = undefined;
   });
 
-  pi.on("turn_start", async (_event, _ctx) => {
-    ctx = _ctx;
-    updateProviderFrom(_ctx.model);
+  pi.on("turn_start", (_event, ctx) => {
+    currentContext = ctx;
+    if (updateProviderFrom(ctx.model)) void poll();
   });
 
-  pi.on("model_select", async (event, _ctx) => {
-    ctx = _ctx;
-    const changed = updateProviderFrom(event.model ?? _ctx.model);
-    if (changed) await poll();
+  pi.on("model_select", (event, ctx) => {
+    currentContext = ctx;
+    updateProviderFrom(event.model);
+    void poll();
   });
 
   pi.registerCommand("usage", {
-    description: "Show API usage for all subscriptions",
-    handler: async (_args, _ctx) => {
-      ctx = _ctx;
-      updateProviderFrom(_ctx.model);
-
-      try {
-        if (_ctx?.hasUI) {
-          await _ctx.ui.custom<void>((tui, theme, keybindings, done) => {
-            const selector = new UsageSelectorComponent(
-              tui,
-              theme,
-              state.activeProvider,
-              () => fetchAllUsages({ endpoints }),
-              () => done(),
-              keybindings,
-            );
-            return selector;
-          });
-        }
-      } finally {
-        await poll();
+    description: "Show quota, balance, and spend for configured providers",
+    handler: async (_args, ctx) => {
+      currentContext = ctx;
+      updateProviderFrom(ctx.model);
+      if (ctx.mode !== "tui") {
+        if (ctx.hasUI) ctx.ui.notify("/usage is available in interactive mode", "warning");
+        return;
       }
+
+      await ctx.ui.custom<void>((tui, theme, keybindings, done) =>
+        new UsageSelectorComponent(
+          tui,
+          theme,
+          keybindings,
+          state.activeProvider,
+          (signal) => fetchAllForContext(ctx, signal),
+          () => done(),
+        ));
+      void poll();
     },
   });
 }

@@ -1,6 +1,6 @@
 node_modules/
+.pi/
 .DS_Store
 npm-debug.log*
 *.tgz
-package-lock.json
 NOTE.md

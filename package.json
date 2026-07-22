@@ -1,7 +1,7 @@
 {
-  "name": "pi-usage-bars",
-  "version": "0.2.3",
-  "description": "Production-ready /usage bars extension for pi (Codex, Claude, Z.AI, Gemini CLI, Antigravity)",
+  "name": "@hk_net/pi-usage-bars",
+  "version": "0.4.0",
+  "description": "Quota, balance, and spend indicators for current Pi providers",
   "keywords": [
     "pi-package",
     "pi",
@@ -9,37 +9,59 @@
     "usage",
     "codex",
     "anthropic",
-    "gemini",
-    "antigravity"
+    "zai",
+    "kimi",
+    "minimax",
+    "openrouter",
+    "deepseek",
+    "moonshot"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/hknet/pi-usage-bars.git"
+    "url": "git+https://github.com/hknet/pi-usage-bars.git"
   },
   "homepage": "https://github.com/hknet/pi-usage-bars#readme",
   "bugs": {
     "url": "https://github.com/hknet/pi-usage-bars/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "type": "module",
   "files": [
     "extensions",
+    "docs",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "bun test tests/usage-bars-core.test.ts",
-    "test:all": "bun run tests/run-all.ts",
-    "prepublishOnly": "npm run test"
+    "test": "bun test tests",
+    "typecheck": "tsc --noEmit",
+    "smoke": "pi -e ./extensions/usage-bars/index.ts --list-models",
+    "check": "npm run typecheck && npm test && npm run smoke",
+    "prepublishOnly": "npm run check"
+  },
+  "engines": {
+    "node": ">=22.19.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-coding-agent": ">=0.81.1",
+    "@earendil-works/pi-tui": ">=0.81.1"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.81.1",
+    "@earendil-works/pi-tui": "0.81.1",
+    "@types/bun": "1.3.14",
+    "@types/node": "24.13.3",
+    "typescript": "5.9.3"
   },
   "pi": {
     "extensions": [
       "./extensions/usage-bars/index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/usage-command.png"
   }
 }
