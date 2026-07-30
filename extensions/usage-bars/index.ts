@@ -256,12 +256,14 @@ class UsageSelectorComponent extends Container implements Focusable {
       const weeklyLabel = (item.data.weeklyLabel ?? "Weekly").slice(0, 9).padEnd(10);
 
       if (!item.data.quotaHidden) {
-        this.listContainer.addChild(new Text(
-          indent + theme.fg("muted", sessionLabel) + this.renderBar(session) + " " +
-            theme.fg(colorForPercent(session), `${session}%`.padStart(4)) + sessionReset,
-          0,
-          0,
-        ));
+        if (!item.data.sessionHidden) {
+          this.listContainer.addChild(new Text(
+            indent + theme.fg("muted", sessionLabel) + this.renderBar(session) + " " +
+              theme.fg(colorForPercent(session), `${session}%`.padStart(4)) + sessionReset,
+            0,
+            0,
+          ));
+        }
         if (!item.data.weeklyHidden) {
           this.listContainer.addChild(new Text(
             indent + theme.fg("muted", weeklyLabel) + this.renderBar(weekly) + " " +
@@ -459,15 +461,22 @@ export default function (pi: ExtensionAPI): void {
         : data.sessionLabel === "Key limit"
           ? "L "
           : "S ";
-    const weeklyStatus = data.weeklyHidden
-      ? ""
-      : theme.fg("muted", " W ") + renderBar(theme, weekly) + " " + renderPercent(theme, weekly) +
-        (data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : "");
+    const quotaLanes: string[] = [];
+    if (!data.sessionHidden) {
+      quotaLanes.push(
+        theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, session) +
+          (data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : ""),
+      );
+    }
+    if (!data.weeklyHidden) {
+      quotaLanes.push(
+        theme.fg("muted", "W ") + renderBar(theme, weekly) + " " + renderPercent(theme, weekly) +
+          (data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : ""),
+      );
+    }
     const status =
       theme.fg("dim", `${label} `) +
-      theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, session) +
-      (data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : "") +
-      weeklyStatus +
+      quotaLanes.join(" ") +
       (data.accountBalance ? theme.fg("muted", ` · ${formatAccountBalance(data.accountBalance)}`) : "") +
       (data.accountSpend?.monthly === undefined
         ? ""

@@ -200,6 +200,29 @@ describe("provider fetchers", () => {
       }),
     });
     expect(usage).toMatchObject({ session: 42, weekly: 73, sessionResetsIn: "2m", weeklyResetsIn: "4m" });
+
+    const teamUsage = await fetchCodexUsage("token", {
+      fetchFn: async () => jsonResponse(200, {
+        plan_type: "team",
+        rate_limit: {
+          primary_window: {
+            used_percent: 72,
+            limit_window_seconds: 604800,
+            reset_after_seconds: 573719,
+          },
+          secondary_window: null,
+        },
+      }),
+    });
+    expect(teamUsage).toMatchObject({
+      session: 0,
+      weekly: 72,
+      sessionHidden: true,
+      weeklyResetsIn: "6d 15h",
+    });
+    expect(teamUsage.weeklyHidden).toBeUndefined();
+    expect(teamUsage.sessionResetsIn).toBeUndefined();
+
     expect((await fetchCodexUsage("token", { fetchFn: async () => jsonResponse(401, {}) })).error).toBe("HTTP 401");
     expect((await fetchCodexUsage("token", { fetchFn: async () => invalidJsonResponse() })).error).toBe("invalid JSON response");
   });

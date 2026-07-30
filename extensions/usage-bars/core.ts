@@ -56,6 +56,7 @@ export interface UsageData {
   extraLimit?: number;
   sessionLabel?: string;
   weeklyLabel?: string;
+  sessionHidden?: boolean;
   weeklyHidden?: boolean;
   notice?: string;
   warning?: string;
@@ -470,6 +471,7 @@ function snapshotUsage(usage: UsageData, nowMs = Date.now()): UsageData {
     extraLimit: usage.extraLimit,
     sessionLabel: usage.sessionLabel,
     weeklyLabel: usage.weeklyLabel,
+    sessionHidden: usage.sessionHidden,
     weeklyHidden: usage.weeklyHidden,
     notice: usage.notice,
     fetchedAt: usage.fetchedAt ?? nowMs,
@@ -520,6 +522,41 @@ function readClaudeCacheOutcome(cacheFile = DEFAULT_USAGE_CACHE_FILE, nowMs = Da
   return null;
 }
 
+export function parseCodexRateLimit(data: any): UsageData {
+  const rateLimit = data?.rate_limit ?? data?.rate_limits;
+  const primary = rateLimit?.primary_window ?? rateLimit?.primary ?? rateLimit?.five_hour;
+  const secondary = rateLimit?.secondary_window ?? rateLimit?.secondary ?? rateLimit?.weekly;
+
+  let sessionWindow: any = null;
+  let weeklyWindow: any = null;
+  for (const [position, window] of [["primary", primary], ["secondary", secondary]] as const) {
+    if (!window || typeof window !== "object") continue;
+    const duration = window.limit_window_seconds;
+    if (typeof duration === "number" && Number.isFinite(duration)) {
+      // Some Codex accounts return their seven-day quota as primary_window
+      // and omit secondary_window, so position alone does not identify it.
+      if (duration >= 2 * 24 * 60 * 60) weeklyWindow ??= window;
+      else sessionWindow ??= window;
+    } else if (position === "primary") {
+      sessionWindow ??= window;
+    } else {
+      weeklyWindow ??= window;
+    }
+  }
+
+  const reset = (window: any) =>
+    typeof window?.reset_after_seconds === "number" ? formatDuration(window.reset_after_seconds) : undefined;
+
+  return {
+    session: readPercentCandidate(sessionWindow?.used_percent) ?? 0,
+    weekly: readPercentCandidate(weeklyWindow?.used_percent) ?? 0,
+    ...(!sessionWindow ? { sessionHidden: true } : {}),
+    ...(!weeklyWindow ? { weeklyHidden: true } : {}),
+    sessionResetsIn: reset(sessionWindow),
+    weeklyResetsIn: reset(weeklyWindow),
+  };
+}
+
 export async function fetchCodexUsage(token: string, config: RequestConfig = {}): Promise<UsageData> {
   const result = await requestJson(
     "https://chatgpt.com/backend-api/wham/usage",
@@ -527,16 +564,7 @@ export async function fetchCodexUsage(token: string, config: RequestConfig = {})
     config,
   );
   if (!result.ok) return { session: 0, weekly: 0, error: result.error };
-
-  const data = result.data as any;
-  const primary = data?.rate_limit?.primary_window;
-  const secondary = data?.rate_limit?.secondary_window;
-  return {
-    session: readPercentCandidate(primary?.used_percent) ?? 0,
-    weekly: readPercentCandidate(secondary?.used_percent) ?? 0,
-    sessionResetsIn: typeof primary?.reset_after_seconds === "number" ? formatDuration(primary.reset_after_seconds) : undefined,
-    weeklyResetsIn: typeof secondary?.reset_after_seconds === "number" ? formatDuration(secondary.reset_after_seconds) : undefined,
-  };
+  return parseCodexRateLimit(result.data);
 }
 
 async function fetchClaudeUsageAttempt(
