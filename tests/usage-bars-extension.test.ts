@@ -126,6 +126,39 @@ describe("usage-bars extension lifecycle", () => {
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
 
+  it("renders a weekly-only Codex window without a fabricated session lane", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      plan_type: "team",
+      rate_limit: {
+        primary_window: {
+          used_percent: 72,
+          limit_window_seconds: 604800,
+          reset_after_seconds: 573719,
+        },
+        secondary_window: null,
+      },
+    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const mock = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "resolved-by-pi",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(harness.emitted).toContainEqual({
+      name: "usage:update",
+      data: expect.objectContaining({ provider: "codex", weekly: 72, sessionHidden: true }),
+    });
+    expect(mock.statuses.at(-1)).toContain("Codex W ");
+    expect(mock.statuses.at(-1)).toContain("72%");
+    expect(mock.statuses.at(-1)).not.toContain(" S ");
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("polls OpenRouter through Pi auth and emits financial usage", async () => {
     globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);
