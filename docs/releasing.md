@@ -22,37 +22,41 @@ cd /path/to/pi-usage-bars
 scripts/release.sh 0.4.1
 ```
 
-The script:
+This **default command only prepares the release**. It deliberately stops before npm login or publication, so the pushed release commit can be reviewed first.
+
+Preparation:
 
 1. verifies that `main` is clean and synchronized with `origin/main`;
 2. rejects an existing npm version or Git tag;
 3. updates `package.json` and `package-lock.json` without creating an early tag;
 4. promotes the `Unreleased` changelog entries into a dated release while preserving an empty `Unreleased` heading;
-5. installs dependencies with `npm ci`, provisions a temporary pinned Bun binary, and runs typecheck, tests, the Pi smoke test, production audit, and package dry-run;
-6. commits and pushes the release source;
-7. starts `npm login --auth-type=web` when needed;
-8. prompts before `npm publish --access public --provenance=false`;
-9. verifies the registry version and integrity; and
-10. creates and pushes the annotated tag only after npm verification succeeds.
+5. installs dependencies with `npm ci`, provisions a temporary pinned Bun binary, and runs typecheck, tests, the Pi smoke test, production audit, and package dry-run; and
+6. commits and pushes the release source.
+
+After reviewing the prepared commit, publish explicitly:
+
+```bash
+scripts/release.sh 0.4.1 publish
+```
+
+`publish` requires the prepared source to be clean and exactly synchronized with the remote, then starts `npm login --auth-type=web` when needed, prompts before `npm publish --access public --provenance=false`, verifies the registry version/integrity, and creates and pushes the annotated tag.
 
 Use `--yes` only in an attended environment where npm authentication is already configured:
 
 ```bash
-scripts/release.sh 0.4.1 --yes
+scripts/release.sh 0.4.1 --yes          # prepare only
+scripts/release.sh 0.4.1 publish --yes  # publish after review
 ```
 
-## Split workflow and recovery
-
-The release can be split around browser authentication or handed between maintainers:
-
-```bash
-scripts/release.sh 0.4.1 prepare
-scripts/release.sh 0.4.1 publish
-```
-
-`prepare` performs versioning, checks, commit, and source push. `publish` requires the prepared source to be clean and exactly synchronized with the remote, then performs browser login, npm publication, verification, and tagging.
+## Recovery and advanced mode
 
 The publish phase is safe to rerun after an ambiguous network response: if the exact version is already visible on npm, it skips republishing and completes verification/tagging. Never retry publication blindly and never force-push a release tag.
+
+`all` is available only as an explicit advanced mode and runs preparation and publication consecutively:
+
+```bash
+scripts/release.sh 0.4.1 all
+```
 
 Show script help with:
 

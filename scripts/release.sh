@@ -3,20 +3,22 @@ set -euo pipefail
 
 BUN_VERSION="1.3.0"
 YES=false
-PHASE="all"
+PHASE="prepare"
 TARGET=""
 BUN_TMP=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh <version> [all|prepare|publish] [--yes]
+Usage: scripts/release.sh <version> [prepare|publish|all] [--yes]
 
 Examples:
-  scripts/release.sh 0.4.1 prepare   # version, test, commit, and push
-  scripts/release.sh 0.4.1 publish   # web login, publish, verify, and tag
-  scripts/release.sh 0.4.1           # run both phases
+  scripts/release.sh 0.4.1           # default: version, test, commit, and push
+  scripts/release.sh 0.4.1 publish   # publish only, after reviewing preparation
+  scripts/release.sh 0.4.1 all       # advanced: run prepare and publish consecutively
 
-The publish phase uses npm browser authentication and disables provenance,
+The default deliberately stops before npm publication. Review the pushed
+release commit, then run the explicit publish phase. The publish phase uses
+npm browser authentication and disables provenance,
 which is unavailable for local publication. Run this script from a terminal
 that can open or display the npm web-login URL.
 EOF
