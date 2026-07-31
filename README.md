@@ -103,7 +103,7 @@ The Codex and Claude usage endpoints are fixed to their first-party services. Cl
 
 ## Financial metrics roadmap
 
-Quota percentages and monetary account data have different meaning and color semantics. OpenRouter, DeepSeek, Moonshot, and MiniMax financial data are rendered as neutral account values; percentages are used only when an actual limit exists. See [Financial metrics plan](docs/financial-metrics-plan.md) for the normalized model and future provider rollout.
+Quota percentages and monetary account data have different meaning and color semantics. OpenRouter, DeepSeek, Moonshot, and MiniMax financial data are rendered as neutral account values; percentages are used only when an actual limit exists.
 
 ## Development
 
