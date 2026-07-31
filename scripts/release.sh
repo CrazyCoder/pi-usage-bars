@@ -5,6 +5,11 @@
 if [[ "${PI_USAGE_BARS_RELEASE_SNAPSHOT:-}" != "1" ]]; then
   SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/pi-usage-bars-release.XXXXXX")
   cp "$0" "$SNAPSHOT"
+  if ! cmp -s "$0" "$SNAPSHOT"; then
+    rm -f "$SNAPSHOT"
+    echo "Release script changed while its execution snapshot was being created; retry the command." >&2
+    exit 1
+  fi
   chmod 700 "$SNAPSHOT"
   PI_USAGE_BARS_RELEASE_SNAPSHOT=1 \
     PI_USAGE_BARS_RELEASE_SNAPSHOT_FILE="$SNAPSHOT" \
