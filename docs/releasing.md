@@ -33,32 +33,33 @@ Preparation:
 5. installs dependencies with `npm ci --no-audit`, provisions a temporary pinned Bun binary, and runs typecheck, tests, detailed dependency audits, and package dry-run; and
 6. commits and pushes the release source.
 
-After reviewing the prepared commit, publish explicitly:
+After reviewing the prepared commit, stage it for browser approval:
 
 ```bash
-scripts/release.sh 0.4.1 publish
+scripts/release.sh 0.4.1 stage
 ```
 
-`publish` requires the prepared source to be clean and exactly synchronized with the remote, then starts `npm login --auth-type=web` when needed, prompts before `npm publish --access public --provenance=false`, verifies the registry version/integrity, and creates and pushes the annotated tag.
+`stage` submits the package to npm's staged-publishing queue. It **does not publish live**, does not open a browser, and does not tag Git. If npm authentication is needed, run `npm login --auth-type=web` manually first.
 
-Use `--yes` only in an attended environment where npm authentication is already configured:
+In [npmjs.com](https://www.npmjs.com), open **Staged Packages**, review the staged tarball, and click **Approve**. npm prompts for 2FA during approval. After npm shows the version as live, finalize the release:
 
 ```bash
-scripts/release.sh 0.4.1 --yes          # prepare only
-scripts/release.sh 0.4.1 publish --yes  # publish after review
+scripts/release.sh 0.4.1 finalize
 ```
 
-## Recovery and advanced mode
+`finalize` refuses to run until the exact version is live in the npm registry. It then verifies registry metadata and creates/pushes the annotated Git tag. It never stages or publishes a package.
 
-The publish phase is safe to rerun after an ambiguous network response: if the exact version is already visible on npm, it skips republishing and completes verification/tagging. Never retry publication blindly and never force-push a release tag.
+Use `--yes` only for attended preparation:
+
+```bash
+scripts/release.sh 0.4.1 --yes  # prepare only
+```
+
+## Recovery
+
+Staging and finalization are safe to rerun: `stage` refuses if the exact version is already live, and `finalize` refuses until it is live. Never force-push a release tag.
 
 The release script first prints a full dependency audit with package names, dependency paths, affected ranges, and available fixes. This is informational because it includes development-only dependencies. It then runs a blocking production-only audit, which rejects high or critical production findings.
-
-`all` is available only as an explicit advanced mode and runs preparation and publication consecutively:
-
-```bash
-scripts/release.sh 0.4.1 all
-```
 
 Show script help with:
 

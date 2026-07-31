@@ -19,6 +19,7 @@ fi
 set -euo pipefail
 
 BUN_VERSION="1.3.0"
+NPM_REGISTRY="https://registry.npmjs.org"
 YES=false
 PHASE="prepare"
 TARGET=""
@@ -26,24 +27,23 @@ BUN_TMP=""
 
 usage() {
   cat <<'EOF'
-Usage: scripts/release.sh <version> [prepare|publish|all] [--yes]
+Usage: scripts/release.sh <version> [prepare|stage|finalize] [--yes]
 
 Examples:
-  scripts/release.sh 0.4.1           # default: version, test, commit, and push
-  scripts/release.sh 0.4.1 publish   # publish only, after reviewing preparation
-  scripts/release.sh 0.4.1 all       # advanced: run prepare and publish consecutively
+  scripts/release.sh 0.4.1            # default: version, test, commit, and push
+  scripts/release.sh 0.4.1 stage      # submit to npm's staged-publishing queue
+  scripts/release.sh 0.4.1 finalize   # tag after browser 2FA approval is live
 
-The default deliberately stops before npm publication. Review the pushed
-release commit, then run the explicit publish phase. The publish phase uses
-npm browser authentication and disables provenance,
-which is unavailable for local publication. Run this script from a terminal
-that can open or display the npm web-login URL.
+The default deliberately stops before npm submission. `stage` never publishes
+live; it submits for review. Approve the staged package in npm's browser UI
+with 2FA, then run `finalize` to verify the live registry and create the tag.
+Neither command starts browser login or waits for browser approval.
 EOF
 }
 
 for arg in "$@"; do
   case "$arg" in
-    all|prepare|publish) PHASE="$arg" ;;
+    prepare|stage|finalize) PHASE="$arg" ;;
     --yes|-y) YES=true ;;
     --help|-h) usage; exit 0 ;;
     *)
@@ -163,7 +163,7 @@ run_checks() {
 }
 
 registry_has_target() {
-  [[ "$(npm view "$PACKAGE@$TARGET" version 2>/dev/null || true)" == "$TARGET" ]]
+  [[ "$(npm view "$PACKAGE@$TARGET" version --registry="$NPM_REGISTRY" 2>/dev/null || true)" == "$TARGET" ]]
 }
 
 version_is_greater() {
@@ -267,11 +267,7 @@ verify_or_create_tag() {
   git push origin "$TAG"
 }
 
-publish_release() {
-  ensure_main
-  ensure_clean
-  ensure_synced
-
+verify_release_source() {
   local current
   current=$(node -p "require('./package.json').version")
   [[ "$current" == "$TARGET" ]] || {
@@ -282,41 +278,46 @@ publish_release() {
     echo "CHANGELOG.md has no $TARGET release heading." >&2
     exit 1
   }
+}
 
-  if registry_has_target; then
-    echo "$PACKAGE@$TARGET is already visible on npm; skipping publication."
-  else
-    run_checks
-    npm whoami >/dev/null 2>&1 || npm login --auth-type=web
-    echo "Authenticated to npm as $(npm whoami)."
-    echo "Registry currently reports latest: $(npm view "$PACKAGE" version 2>/dev/null || echo unpublished)"
-    confirm "Publish $PACKAGE@$TARGET publicly to npm?" || { echo "Cancelled."; exit 1; }
+stage_release() {
+  ensure_main
+  ensure_clean
+  ensure_synced
+  verify_release_source
+  registry_has_target && {
+    echo "$PACKAGE@$TARGET is already live; run finalize to verify and tag it." >&2
+    exit 1
+  }
+  npm whoami --registry="$NPM_REGISTRY" >/dev/null 2>&1 || {
+    echo "Not authenticated to npm. Run npm login --auth-type=web first." >&2
+    exit 1
+  }
 
-    if ! npm publish --access public --provenance=false; then
-      if registry_has_target; then
-        echo "Publish returned an error, but $PACKAGE@$TARGET is visible; continuing verification."
-      else
-        echo "Publish failed and $PACKAGE@$TARGET is not visible. Do not retry blindly." >&2
-        exit 1
-      fi
-    fi
-  fi
+  npm stage publish --access public --provenance=false --registry="$NPM_REGISTRY"
+  printf '\n%s@%s is staged, not live.\n' "$PACKAGE" "$TARGET"
+  echo "Review and approve it with 2FA in npmjs.com → Staged Packages."
+  echo "After it is live, run: scripts/release.sh $TARGET finalize"
+}
 
-  local visible=false
-  for _ in {1..12}; do
-    if registry_has_target; then visible=true; break; fi
-    sleep 5
-  done
-  $visible || { echo "$PACKAGE@$TARGET did not become visible on npm." >&2; exit 1; }
+finalize_release() {
+  ensure_main
+  ensure_clean
+  ensure_synced
+  verify_release_source
+  registry_has_target || {
+    echo "$PACKAGE@$TARGET is not live yet. Approve it in npmjs.com → Staged Packages, then retry finalize." >&2
+    exit 1
+  }
 
-  npm view "$PACKAGE" version dist-tags.latest
-  npm view "$PACKAGE@$TARGET" dist.integrity
+  npm view "$PACKAGE" version dist-tags.latest --registry="$NPM_REGISTRY"
+  npm view "$PACKAGE@$TARGET" dist.integrity --registry="$NPM_REGISTRY"
   verify_or_create_tag
   echo "Released $PACKAGE@$TARGET and tagged $TAG."
 }
 
 case "$PHASE" in
   prepare) prepare ;;
-  publish) publish_release ;;
-  all) prepare; publish_release ;;
+  stage) stage_release ;;
+  finalize) finalize_release ;;
 esac
