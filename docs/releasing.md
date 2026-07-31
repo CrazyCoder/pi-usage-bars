@@ -2,7 +2,7 @@
 
 This repository uses semantic versions. The package version, changelog heading, Git tag, and npm version must agree.
 
-Local publication uses npm browser authentication. The GitHub Actions publish workflow is manual-only; pushing a tag does not publish the package.
+Local releases use npm staged publishing followed by browser 2FA approval. Browser login only authenticates the CLI; it does not publish or approve a staged package. The GitHub Actions publish workflow is manual-only; pushing a tag does not publish the package.
 
 ## Prerequisites
 
@@ -39,7 +39,7 @@ After reviewing the prepared commit, stage it for browser approval:
 scripts/release.sh X.Y.Z stage
 ```
 
-`stage` submits the package to npm's staged-publishing queue. It **does not publish live**, does not open a browser, and does not tag Git. If npm authentication is needed, run `npm login --auth-type=web` manually first.
+`stage` submits the package to npm's staged-publishing queue. It **does not publish live**, does not open a browser, and does not tag Git. If npm authentication is needed, run `npm login --auth-type=web` manually first; this only authenticates the CLI.
 
 In [npmjs.com](https://www.npmjs.com), open **Staged Packages**, review the staged tarball, and click **Approve**. npm prompts for 2FA during approval. After npm shows the version as live, finalize the release:
 
