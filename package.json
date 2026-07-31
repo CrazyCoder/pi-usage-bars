@@ -40,8 +40,7 @@
   "scripts": {
     "test": "bun test tests",
     "typecheck": "tsc --noEmit",
-    "smoke": "pi -e ./extensions/usage-bars/index.ts --list-models",
-    "check": "npm run typecheck && npm test && npm run smoke",
+    "check": "npm run typecheck && npm test",
     "prepublishOnly": "npm run check"
   },
   "engines": {

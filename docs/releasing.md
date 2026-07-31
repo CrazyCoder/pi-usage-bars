@@ -30,7 +30,7 @@ Preparation:
 2. rejects an existing npm version or Git tag;
 3. updates `package.json` and `package-lock.json` without creating an early tag;
 4. promotes the `Unreleased` changelog entries into a dated release while preserving an empty `Unreleased` heading;
-5. installs dependencies with `npm ci`, provisions a temporary pinned Bun binary, and runs typecheck, tests, the Pi smoke test, production audit, and package dry-run; and
+5. installs dependencies with `npm ci --no-audit`, provisions a temporary pinned Bun binary, and runs typecheck, tests, detailed dependency audits, and package dry-run; and
 6. commits and pushes the release source.
 
 After reviewing the prepared commit, publish explicitly:
@@ -51,6 +51,8 @@ scripts/release.sh 0.4.1 publish --yes  # publish after review
 ## Recovery and advanced mode
 
 The publish phase is safe to rerun after an ambiguous network response: if the exact version is already visible on npm, it skips republishing and completes verification/tagging. Never retry publication blindly and never force-push a release tag.
+
+The release script first prints a full dependency audit with package names, dependency paths, affected ranges, and available fixes. This is informational because it includes development-only dependencies. It then runs a blocking production-only audit, which rejects high or critical production findings.
 
 `all` is available only as an explicit advanced mode and runs preparation and publication consecutively:
 

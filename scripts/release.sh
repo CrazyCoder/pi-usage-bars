@@ -123,10 +123,24 @@ setup_bun() {
 }
 
 run_checks() {
-  npm ci
+  npm ci --no-audit
   setup_bun
   npm run check
+
+  # Show every finding and its dependency path. Development-only findings are
+  # reported but do not block publication; the production gate below does.
+  echo "\n=== Full dependency audit (informational; includes development dependencies) ==="
+  local full_audit_status=0
+  npm audit || full_audit_status=$?
+  if (( full_audit_status != 0 )); then
+    echo "Full audit reported findings. Review the details above; enforcing the production gate next."
+  else
+    echo "Full audit: no known vulnerabilities."
+  fi
+
+  echo "\n=== Production dependency audit (blocks high/critical findings) ==="
   npm audit --omit=dev --audit-level=high
+  echo "Production dependency audit passed."
   npm pack --dry-run
 }
 
