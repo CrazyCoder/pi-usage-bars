@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## [0.4.1] - 2026-07-31
-
 ### Fixed
 
 - Classify Codex quota windows by `limit_window_seconds` instead of assuming `primary_window` is always the session limit. Codex accounts that expose only a seven-day primary window now show it as Weekly and no longer display a fabricated `Session 0%` lane.
