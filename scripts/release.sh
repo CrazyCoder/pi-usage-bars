@@ -129,7 +129,7 @@ run_checks() {
 
   # Show every finding and its dependency path. Development-only findings are
   # reported but do not block publication; the production gate below does.
-  echo "\n=== Full dependency audit (informational; includes development dependencies) ==="
+  printf '\n=== Full dependency audit (informational; includes development dependencies) ===\n'
   local full_audit_status=0
   npm audit || full_audit_status=$?
   if (( full_audit_status != 0 )); then
@@ -138,7 +138,7 @@ run_checks() {
     echo "Full audit: no known vulnerabilities."
   fi
 
-  echo "\n=== Production dependency audit (blocks high/critical findings) ==="
+  printf '\n=== Production dependency audit (blocks high/critical findings) ===\n'
   npm audit --omit=dev --audit-level=high
   echo "Production dependency audit passed."
   npm pack --dry-run
