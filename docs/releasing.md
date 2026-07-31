@@ -2,105 +2,76 @@
 
 This repository uses semantic versions. The package version, changelog heading, Git tag, and npm version must agree.
 
-The npm publish workflow is manual-only. Pushing a Git tag does not publish the package, which prevents a tag pushed after a local npm release from attempting to publish the same version twice.
+Local publication uses npm browser authentication. The GitHub Actions publish workflow is manual-only; pushing a tag does not publish the package.
 
 ## Prerequisites
 
 - Write access to `hknet/pi-usage-bars`.
 - Publish access to the npm scope `@hk_net`.
-- npm authentication for the `hk_net` account (`npm whoami`).
 - Node.js 22.19 or newer.
-- Bun 1.3.0. The commands below use a temporary pinned Bun installation, so a global Bun installation is not required.
+- A clean, synchronized `main` branch.
 
-Never place an npm token in the repository, command history, or endpoint override. Complete npm's browser or OTP authorization when prompted.
+Never place an npm token in the repository, command history, or endpoint configuration. Complete npm's browser or OTP authorization when prompted.
 
-## 1. Verify the source release
+## Recommended release script
 
-From the repository root:
-
-```bash
-git switch main
-git pull --ff-only origin main
-git status --short
-node -p "require('./package.json').version"
-```
-
-For this release, the version must be `0.4.0` and the working tree must be clean.
-
-Run the same checks used by CI and npm's `prepublishOnly` hook:
+From the repository root, provide the exact new semantic version:
 
 ```bash
-npx --yes --package bun@1.3.0 -- npm run check
-npm audit --omit=dev --audit-level=high
-npm pack --dry-run
+cd /path/to/pi-usage-bars
+scripts/release.sh 0.4.1
 ```
 
-Expected results for `0.4.0`:
+The script:
 
-- strict TypeScript check passes;
-- 32 tests pass;
-- Pi smoke test passes;
-- production audit has no vulnerabilities;
-- the dry-run package is `@hk_net/pi-usage-bars@0.4.0` and contains the extension, documentation, changelog, and license.
+1. verifies that `main` is clean and synchronized with `origin/main`;
+2. rejects an existing npm version or Git tag;
+3. updates `package.json` and `package-lock.json` without creating an early tag;
+4. promotes the `Unreleased` changelog entries into a dated release while preserving an empty `Unreleased` heading;
+5. installs dependencies with `npm ci`, provisions a temporary pinned Bun binary, and runs typecheck, tests, the Pi smoke test, production audit, and package dry-run;
+6. commits and pushes the release source;
+7. starts `npm login --auth-type=web` when needed;
+8. prompts before `npm publish --access public --provenance=false`;
+9. verifies the registry version and integrity; and
+10. creates and pushes the annotated tag only after npm verification succeeds.
 
-## 2. Verify npm state
+Use `--yes` only in an attended environment where npm authentication is already configured:
 
 ```bash
-npm whoami
-npm view @hk_net/pi-usage-bars version
+scripts/release.sh 0.4.1 --yes
 ```
 
-Before publishing `0.4.0`, the registry should still report `0.3.0`. If it already reports `0.4.0`, do not publish it again.
+## Split workflow and recovery
 
-Optionally inspect exactly what npm will receive:
+The release can be split around browser authentication or handed between maintainers:
 
 ```bash
-npm pack --dry-run --json
+scripts/release.sh 0.4.1 prepare
+scripts/release.sh 0.4.1 publish
 ```
 
-## 3. Publish manually
+`prepare` performs versioning, checks, commit, and source push. `publish` requires the prepared source to be clean and exactly synchronized with the remote, then performs browser login, npm publication, verification, and tagging.
 
-Local npm publication cannot use GitHub's OIDC provenance attestation, so explicitly disable provenance for this manual release:
+The publish phase is safe to rerun after an ambiguous network response: if the exact version is already visible on npm, it skips republishing and completes verification/tagging. Never retry publication blindly and never force-push a release tag.
+
+Show script help with:
 
 ```bash
-npx --yes --package bun@1.3.0 -- \
-  npm publish --access public --provenance=false
+scripts/release.sh --help
 ```
 
-The `prepublishOnly` hook reruns the complete check. Complete the npm browser/OTP authorization if requested. Do not retry blindly after an ambiguous network failure; verify the registry first.
+## Post-release verification
 
-## 4. Verify the published package
-
-```bash
-npm view @hk_net/pi-usage-bars version dist-tags.latest
-npm view @hk_net/pi-usage-bars@0.4.0 dist.integrity
-```
-
-Both version values should report `0.4.0`, and the integrity field should be present.
-
-Test installation or update through Pi:
+Confirm installation through Pi:
 
 ```bash
 pi install npm:@hk_net/pi-usage-bars
-# If it is already installed:
+# If already installed from npm:
 pi update npm:@hk_net/pi-usage-bars
 ```
 
 Restart Pi, or use `/reload`, then run `/usage`.
 
-## 5. Tag the verified source
+## GitHub Actions alternative
 
-Only tag after npm verification succeeds:
-
-```bash
-git switch main
-git pull --ff-only origin main
-git tag -a v0.4.0 -m "Release v0.4.0"
-git push origin v0.4.0
-```
-
-The tag does not trigger npm publication. It records the exact source corresponding to the already-published package. A GitHub release can then be created from `v0.4.0` using the `0.4.0` changelog section.
-
-## CI publishing alternative
-
-The **Publish to npm (manual)** GitHub Actions workflow remains available as an alternative. It requires the `NPM_TOKEN` repository secret and publishes with npm provenance. Do not run it after publishing the same version locally.
+The **Publish to npm (manual)** workflow is available as an alternative. It requires the `NPM_TOKEN` repository secret and publishes with npm provenance. Do not run it after publishing the same version locally.
