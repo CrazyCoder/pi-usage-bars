@@ -19,7 +19,7 @@ From the repository root, provide the exact new semantic version:
 
 ```bash
 cd /path/to/pi-usage-bars
-scripts/release.sh 0.4.1
+scripts/release.sh X.Y.Z
 ```
 
 This **default command only prepares the release**. It deliberately stops before npm login or publication, so the pushed release commit can be reviewed first. The launcher first executes an immutable temporary copy of itself, so editing the script while a release is running cannot corrupt that run.
@@ -36,7 +36,7 @@ Preparation:
 After reviewing the prepared commit, stage it for browser approval:
 
 ```bash
-scripts/release.sh 0.4.1 stage
+scripts/release.sh X.Y.Z stage
 ```
 
 `stage` submits the package to npm's staged-publishing queue. It **does not publish live**, does not open a browser, and does not tag Git. If npm authentication is needed, run `npm login --auth-type=web` manually first.
@@ -44,7 +44,7 @@ scripts/release.sh 0.4.1 stage
 In [npmjs.com](https://www.npmjs.com), open **Staged Packages**, review the staged tarball, and click **Approve**. npm prompts for 2FA during approval. After npm shows the version as live, finalize the release:
 
 ```bash
-scripts/release.sh 0.4.1 finalize
+scripts/release.sh X.Y.Z finalize
 ```
 
 `finalize` refuses to run until the exact version is live in the npm registry. It then verifies registry metadata and creates/pushes the annotated Git tag. It never stages or publishes a package.
@@ -52,7 +52,7 @@ scripts/release.sh 0.4.1 finalize
 Use `--yes` only for attended preparation:
 
 ```bash
-scripts/release.sh 0.4.1 --yes  # prepare only
+scripts/release.sh X.Y.Z --yes  # prepare only
 ```
 
 ## Recovery

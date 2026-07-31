@@ -114,9 +114,9 @@ npm install
 npm run check
 ```
 
-`npm run check` performs a strict TypeScript check, runs the Bun test suite, and smoke-loads the extension with the pinned current Pi release.
+`npm run check` performs a strict TypeScript check and runs the Bun test suite.
 
-Maintainers should follow the complete [release and npm publication guide](docs/releasing.md). npm publication is manual; pushing a Git tag does not publish automatically.
+Maintainers should follow the complete [release and npm publication guide](docs/releasing.md): prepare the release, stage it for npm browser approval, then finalize it after 2FA approval. Pushing a Git tag does not publish automatically.
 
 ## Credits
 
