@@ -124,3 +124,4 @@ This extension is based on and inspired by:
 
 - [CodexBar](https://github.com/steipete/CodexBar)
 - [rho usage-bars](https://github.com/mikeyobrien/rho/tree/main/extensions/usage-bars)
+- [ajarellanod/pi-usage-bars](https://github.com/ajarellanod/pi-usage-bars)
