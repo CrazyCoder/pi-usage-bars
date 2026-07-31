@@ -22,7 +22,7 @@ cd /path/to/pi-usage-bars
 scripts/release.sh 0.4.1
 ```
 
-This **default command only prepares the release**. It deliberately stops before npm login or publication, so the pushed release commit can be reviewed first.
+This **default command only prepares the release**. It deliberately stops before npm login or publication, so the pushed release commit can be reviewed first. The launcher first executes an immutable temporary copy of itself, so editing the script while a release is running cannot corrupt that run.
 
 Preparation:
 

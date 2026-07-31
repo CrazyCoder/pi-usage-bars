@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+# Re-exec a private copy before parsing the release workflow. This prevents an
+# editor or another process changing this file mid-run from creating a torn
+# script (Bash reads shell scripts incrementally).
+if [[ "${PI_USAGE_BARS_RELEASE_SNAPSHOT:-}" != "1" ]]; then
+  SNAPSHOT=$(mktemp "${TMPDIR:-/tmp}/pi-usage-bars-release.XXXXXX")
+  cp "$0" "$SNAPSHOT"
+  chmod 700 "$SNAPSHOT"
+  PI_USAGE_BARS_RELEASE_SNAPSHOT=1 \
+    PI_USAGE_BARS_RELEASE_SNAPSHOT_FILE="$SNAPSHOT" \
+    exec "$SNAPSHOT" "$@"
+fi
+
 set -euo pipefail
 
 BUN_VERSION="1.3.0"
@@ -58,6 +70,7 @@ TAG="v$TARGET"
 
 cleanup() {
   [[ -z "$BUN_TMP" ]] || rm -rf "$BUN_TMP"
+  [[ -z "${PI_USAGE_BARS_RELEASE_SNAPSHOT_FILE:-}" ]] || rm -f "$PI_USAGE_BARS_RELEASE_SNAPSHOT_FILE"
 }
 trap cleanup EXIT
 
