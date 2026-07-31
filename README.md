@@ -35,7 +35,7 @@ Google Gemini CLI and Google Antigravity are not supported because Pi removed th
 
 ## Requirements
 
-- Pi 0.81.1 or newer
+- Pi 0.81.1 or newer (tested with the current Pi 0.83.0 release)
 - Node.js 22.19 or newer when using the npm-distributed Pi CLI
 
 Authenticate providers through Pi's `/login` command. The extension resolves credentials through Pi's provider API; it does not read or write `auth.json` itself.
