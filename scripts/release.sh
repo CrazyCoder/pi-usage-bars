@@ -294,6 +294,9 @@ stage_release() {
     exit 1
   }
 
+  # npm stage publish runs prepublishOnly; provide the same temporary Bun
+  # binary used by preparation so the hook can execute the Bun test suite.
+  setup_bun
   npm stage publish --access public --provenance=false --registry="$NPM_REGISTRY"
   printf '\n%s@%s is staged, not live.\n' "$PACKAGE" "$TARGET"
   echo "Review and approve it with 2FA in npmjs.com → Staged Packages."
