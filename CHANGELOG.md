@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Added support for credit-based ZAI plan tiers that report `CREDIT_LIMIT` quota windows. Thanks to [@chrislucca](https://github.com/chrislucca) for the contribution in [#1](https://github.com/hknet/pi-usage-bars/pull/1).
+
 ### Changed
 
 - Updated the development and test baseline to Pi SDK 0.84.1 while retaining runtime compatibility with Pi 0.81.1 and newer.
