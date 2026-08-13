@@ -105,6 +105,8 @@ The Codex and Claude usage endpoints are fixed to their first-party services. Cl
 
 Quota percentages and monetary account data have different meaning and color semantics. OpenRouter, DeepSeek, Moonshot, and MiniMax financial data are rendered as neutral account values; percentages are used only when an actual limit exists.
 
+See [provider support research](docs/provider-research.md) for providers investigated but currently blocked by the absence of a suitable first-party usage API, including Qwen Token Plan and Baseten.
+
 ## Development
 
 Install Node.js 22.19+ and Bun 1.3, then run:

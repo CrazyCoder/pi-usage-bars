@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Documentation
+
+- Recorded Qwen Token Plan and Baseten usage-API research, including the conditions for revisiting provider support.
+
 ## [0.4.2] - 2026-08-13
 
 ### Fixed
