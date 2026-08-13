@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.4.2] - 2026-08-13
+
 ### Fixed
 
 - Added support for credit-based ZAI plan tiers that report `CREDIT_LIMIT` quota windows. Thanks to [@chrislucca](https://github.com/chrislucca) for the contribution in [#1](https://github.com/hknet/pi-usage-bars/pull/1).
