@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Changed
+
+- Updated the development and test baseline to Pi SDK 0.84.1 while retaining runtime compatibility with Pi 0.81.1 and newer.
+
+### Security
+
+- Updated the Pi SDK development dependency chain to use `undici` 8.9.0, resolving the advisories affecting earlier 8.x releases.
+
 ## [0.4.1] - 2026-07-31
 
 ### Fixed
