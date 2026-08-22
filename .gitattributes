@@ -1,0 +1,3 @@
+# Keep attributes and WSL/Linux shell entrypoints on LF endings under Git for Windows.
+.gitattributes text eol=lf
+*.sh text eol=lf

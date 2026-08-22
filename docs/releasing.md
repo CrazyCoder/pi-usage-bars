@@ -22,6 +22,14 @@ cd /path/to/pi-usage-bars
 scripts/release.sh X.Y.Z
 ```
 
+From Windows PowerShell, run the Bash workflow through WSL (replace the WSL path with your checkout):
+
+```powershell
+wsl bash -lc 'cd /mnt/c/path/to/pi-usage-bars && ./scripts/release.sh X.Y.Z'
+```
+
+The repository's `.gitattributes` keeps shell scripts on LF endings so they remain executable in WSL even when Git for Windows uses `core.autocrlf=true`.
+
 This **default command only prepares the release**. It deliberately stops before npm login or publication, so the pushed release commit can be reviewed first. The launcher first executes an immutable temporary copy of itself, so editing the script while a release is running cannot corrupt that run.
 
 Preparation:
@@ -39,12 +47,24 @@ After reviewing the prepared commit, stage it for browser approval:
 scripts/release.sh X.Y.Z stage
 ```
 
+From Windows PowerShell:
+
+```powershell
+wsl bash -lc 'cd /mnt/c/path/to/pi-usage-bars && ./scripts/release.sh X.Y.Z stage'
+```
+
 `stage` submits the package to npm's staged-publishing queue. It **does not publish live**, does not open a browser, and does not tag Git. If npm authentication is needed, run `npm login --auth-type=web` manually first; this only authenticates the CLI.
 
 In [npmjs.com](https://www.npmjs.com), open **Staged Packages**, review the staged tarball, and click **Approve**. npm prompts for 2FA during approval. After npm shows the version as live, finalize the release:
 
 ```bash
 scripts/release.sh X.Y.Z finalize
+```
+
+From Windows PowerShell:
+
+```powershell
+wsl bash -lc 'cd /mnt/c/path/to/pi-usage-bars && ./scripts/release.sh X.Y.Z finalize'
 ```
 
 `finalize` refuses to run until the exact version is live in the npm registry. It then verifies registry metadata and creates/pushes the annotated Git tag. It never stages or publishes a package.
