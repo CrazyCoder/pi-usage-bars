@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Marked Pi's host-provided SDK packages as optional wildcard peers, preventing npm from installing a redundant Pi SDK dependency tree for this package.
+
 ## [0.4.4] - 2026-08-22
 
 ### Documentation
