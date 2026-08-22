@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.5.0] - 2026-08-22
+
 ### Added
 
 - Added a `--usage` extension flag that prints one JSON line for the active provider and exits, providing a non-interactive Pi loader, credential, and endpoint smoke test.
