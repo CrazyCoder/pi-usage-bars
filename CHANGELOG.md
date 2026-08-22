@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.4.3] - 2026-08-22
+
 ### Fixed
 
 - Resolve kimi-coding OAuth credentials that Pi exposes only as a Bearer `Authorization` header (no `apiKey`), so the Kimi For Coding usage indicator no longer reports "auth resolution failed (configured authentication did not resolve a token)".
