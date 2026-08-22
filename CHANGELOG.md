@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Added
+
+- Added a `--usage` extension flag that prints one JSON line for the active provider and exits, providing a non-interactive Pi loader, credential, and endpoint smoke test.
+
+### Changed
+
+- Raised the minimum supported Pi version from 0.81.1 to 0.84.2; older Pi releases are no longer claimed or tested as compatible.
+- Namespaced the footer status and inter-extension usage update event to avoid collisions with other Pi extensions. **Breaking for event consumers:** listeners using the previous undocumented `usage:update` event must switch to `@hk_net/pi-usage-bars:update`.
+- Bounded the `/usage` provider viewport, expanded only the selected provider, and added the configured page-up/page-down navigation bindings for smaller terminals.
+- Removed redundant active-model checks on every turn in favor of Pi's `session_start` and `model_select` lifecycle events.
+- Cancelled an obsolete in-flight provider request immediately when the selected model provider changes, allowing the new provider to refresh without waiting for the old request timeout.
+- Isolated and documented the current Pi OAuth source-label compatibility check. Pi 0.84.2 exposes `AuthResult.source` as a human-readable label but no public typed credential discriminator, so Claude subscription detection must currently recognize the `"OAuth"` label.
+
+### Tests
+
+- Added lifecycle coverage for shutdown and replacement-session cancellation, repeated-start interval cleanup, `/usage` closure cancellation, model changes during active polling, and model-selection event wiring.
+
 ## [0.4.5] - 2026-08-22
 
 ### Changed

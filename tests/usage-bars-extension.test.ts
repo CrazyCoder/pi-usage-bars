@@ -12,7 +12,7 @@ interface Harness {
   emitted: Array<{ name: string; data: unknown }>;
 }
 
-function createHarness(): Harness {
+function createHarness(options: { usageFlag?: boolean } = {}): Harness {
   const harness: Harness = {
     handlers: new Map(),
     commands: new Map(),
@@ -24,6 +24,10 @@ function createHarness(): Harness {
     },
     registerCommand(name: string, command: Harness["commands"] extends Map<string, infer T> ? T : never) {
       harness.commands.set(name, command);
+    },
+    registerFlag() {},
+    getFlag(name: string) {
+      return name === "usage" && options.usageFlag === true;
     },
     events: {
       emit(name: string, data: unknown) {
@@ -41,9 +45,11 @@ function createContext(
   options: { configured?: boolean; source?: string; token?: string; authHeaders?: Record<string, string> } = {},
 ) {
   const statuses: Array<string | undefined> = [];
+  const statusKeys: string[] = [];
   const notifications: string[] = [];
   let authCalls = 0;
   let customCalls = 0;
+  let shutdownCalls = 0;
   const theme = {
     fg: (_color: string, text: string) => text,
     bold: (text: string) => text,
@@ -54,10 +60,14 @@ function createContext(
     model: { provider, id: "test-model" },
     ui: {
       theme,
-      setStatus: (_key: string, value: string | undefined) => statuses.push(value),
+      setStatus: (key: string, value: string | undefined) => {
+        statusKeys.push(key);
+        statuses.push(value);
+      },
       notify: (message: string) => notifications.push(message),
       custom: async () => { customCalls += 1; },
     },
+    shutdown: () => { shutdownCalls += 1; },
     modelRegistry: {
       getProvider: () => ({}),
       getProviderAuthStatus: () => ({ configured: options.configured ?? false }),
@@ -76,9 +86,11 @@ function createContext(
   return {
     context,
     statuses,
+    statusKeys,
     notifications,
     authCalls: () => authCalls,
     customCalls: () => customCalls,
+    shutdownCalls: () => shutdownCalls,
   };
 }
 
@@ -88,6 +100,30 @@ afterEach(() => {
 });
 
 describe("usage-bars extension lifecycle", () => {
+  it("prints one-line JSON and shuts down for --usage", async () => {
+    const harness = createHarness({ usageFlag: true });
+    const mock = createContext("print", "google");
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (line?: unknown) => { lines.push(String(line)); };
+    try {
+      await harness.handlers.get("session_start")?.(
+        { type: "session_start", reason: "startup" },
+        mock.context,
+      );
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0]!)).toEqual({
+      extension: "@hk_net/pi-usage-bars",
+      status: "unsupported",
+      provider: "google",
+    });
+    expect(mock.shutdownCalls()).toBe(1);
+  });
+
   it("does not poll or create timers in non-TUI modes", async () => {
     const harness = createHarness();
     const mock = createContext("print", "openai-codex", {
@@ -96,7 +132,10 @@ describe("usage-bars extension lifecycle", () => {
       token: "token",
     });
 
-    const result = harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    const result = await harness.handlers.get("session_start")?.(
+      { type: "session_start", reason: "startup" },
+      mock.context,
+    );
     expect(result).toBeUndefined();
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(mock.authCalls()).toBe(0);
@@ -122,10 +161,11 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "usage:update",
+      name: "@hk_net/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "codex", session: 12, weekly: 34 }),
     });
     expect(mock.statuses.at(-1)).toContain("Codex");
+    expect(mock.statusKeys.at(-1)).toBe("@hk_net/pi-usage-bars");
 
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
@@ -164,7 +204,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "usage:update",
+      name: "@hk_net/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "kimi", session: 25, weekly: 25 }),
     });
     expect(mock.statuses.at(-1)).toContain("Kimi");
@@ -196,7 +236,7 @@ describe("usage-bars extension lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(harness.emitted).toContainEqual({
-      name: "usage:update",
+      name: "@hk_net/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "codex", weekly: 72, sessionHidden: true }),
     });
     expect(mock.statuses.at(-1)).toContain("Codex W ");
@@ -226,7 +266,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "usage:update",
+      name: "@hk_net/pi-usage-bars:update",
       data: expect.objectContaining({
         provider: "openrouter",
         accountBalance: { amount: 20, unit: "USD", label: "Balance" },
@@ -237,6 +277,196 @@ describe("usage-bars extension lifecycle", () => {
     expect(mock.statuses.at(-1)).toContain("$20.00");
 
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("aborts an active provider request during session shutdown", async () => {
+    let requestAborted = false;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          requestAborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      })) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const mock = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "resolved-by-pi",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(requestAborted).toBeTrue();
+    expect(mock.statuses.at(-1)).toBeUndefined();
+  });
+
+  it("replaces an active poll cleanly when a session runtime starts again", async () => {
+    let calls = 0;
+    let firstRequestAborted = false;
+    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      calls += 1;
+      if (calls === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            firstRequestAborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+      return new Response(JSON.stringify({
+        rate_limit: {
+          primary_window: { used_percent: 21 },
+          secondary_window: { used_percent: 43 },
+        },
+      }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const first = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "first-session-token",
+    });
+    const replacement = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "replacement-session-token",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, first.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "reload" }, replacement.context);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(firstRequestAborted).toBeTrue();
+    expect(harness.emitted).toContainEqual({
+      name: "@hk_net/pi-usage-bars:update",
+      data: expect.objectContaining({ provider: "codex", session: 21, weekly: 43 }),
+    });
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, replacement.context);
+  });
+
+  it("keeps only one polling interval across repeated session starts", () => {
+    const realSetInterval = globalThis.setInterval;
+    const realClearInterval = globalThis.clearInterval;
+    const activeIntervals = new Set<number>();
+    let nextInterval = 1;
+    globalThis.setInterval = ((_handler: TimerHandler, _timeout?: number) => {
+      const id = nextInterval++;
+      activeIntervals.add(id);
+      return id;
+    }) as unknown as typeof setInterval;
+    globalThis.clearInterval = ((id: number) => {
+      activeIntervals.delete(id);
+    }) as unknown as typeof clearInterval;
+
+    try {
+      const harness = createHarness();
+      const first = createContext("tui");
+      const second = createContext("tui");
+      harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, first.context);
+      harness.handlers.get("session_start")?.({ type: "session_start", reason: "reload" }, second.context);
+      expect(activeIntervals.size).toBe(1);
+
+      harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, second.context);
+      expect(activeIntervals.size).toBe(0);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      globalThis.clearInterval = realClearInterval;
+    }
+  });
+
+  it("cancels an old provider poll and refreshes the newly selected model provider", async () => {
+    let codexRequestAborted = false;
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes("chatgpt.com")) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            codexRequestAborted = true;
+            reject(new DOMException("Aborted", "AbortError"));
+          }, { once: true });
+        });
+      }
+      const body = url.endsWith("/credits")
+        ? { data: { total_credits: 20, total_usage: 5 } }
+        : { data: { usage_monthly: 2 } };
+      return new Response(JSON.stringify(body), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const mock = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "resolved-by-pi",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    harness.handlers.get("model_select")?.({
+      type: "model_select",
+      model: { provider: "openrouter", id: "test-model" },
+      previousModel: { provider: "openai-codex", id: "test-model" },
+      source: "set",
+    }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    expect(codexRequestAborted).toBeTrue();
+    expect(harness.emitted).toContainEqual({
+      name: "@hk_net/pi-usage-bars:update",
+      data: expect.objectContaining({ provider: "openrouter" }),
+    });
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("aborts /usage requests when the custom component closes", async () => {
+    let selectorRequestAborted = false;
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          selectorRequestAborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      })) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const mock = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "resolved-by-pi",
+    });
+    const context = mock.context as any;
+    context.modelRegistry.getProvider = (provider: string) => provider === "openai-codex" ? {} : undefined;
+    context.modelRegistry.getProviderAuthStatus = (provider: string) => ({
+      configured: provider === "openai-codex",
+    });
+    context.ui.custom = async (factory: (...args: any[]) => any) => {
+      let component: { handleInput?(data: string): void; dispose?(): void } | undefined;
+      await new Promise<void>((resolve) => {
+        void Promise.resolve(factory(
+          { terminal: { rows: 24 }, requestRender() {} },
+          context.ui.theme,
+          { matches: (data: string, binding: string) => data === "escape" && binding === "tui.select.cancel" },
+          resolve,
+        )).then((created) => {
+          component = created;
+          setTimeout(() => component?.handleInput?.("escape"), 10);
+        });
+      });
+      component?.dispose?.();
+    };
+
+    await harness.commands.get("usage")?.handler("", mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(selectorRequestAborted).toBeTrue();
+  });
+
+  it("relies on model_select rather than checking the model every turn", () => {
+    const harness = createHarness();
+    expect(harness.handlers.has("model_select")).toBeTrue();
+    expect(harness.handlers.has("turn_start")).toBeFalse();
   });
 
   it("guards the custom command outside interactive TUI mode", async () => {

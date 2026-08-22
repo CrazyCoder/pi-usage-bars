@@ -35,7 +35,7 @@ Google Gemini CLI and Google Antigravity are not supported because Pi removed th
 
 ## Requirements
 
-- Pi 0.81.1 or newer (tested with the current Pi 0.84.2 release)
+- Pi 0.84.2 or newer
 - Node.js 22.19 or newer when using the npm-distributed Pi CLI
 
 Authenticate providers through Pi's `/login` command. The extension resolves credentials through Pi's provider API; it does not read or write `auth.json` itself.
@@ -74,9 +74,19 @@ Usage refresh runs in interactive TUI sessions every two minutes. It does not ru
 
 ### `/usage`
 
-Run `/usage` to open a searchable list of configured supported providers.
+Run `/usage` to open a searchable list of configured supported providers. The selected provider's details are expanded; use the configured selection and page-navigation keybindings to browse the bounded list.
 
-![/usage command](https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/usage-command.png)
+![/usage command]
+
+### `--usage`
+
+Pass `--usage` to print one JSON line for the active model provider and exit without opening the usage UI. This is also useful as a loader and credential smoke test:
+
+```powershell
+pi --no-extensions -e C:\hk\code\pi-usage-bars\extensions\usage-bars\index.ts --usage
+```
+
+The result has `status` set to `ok`, `unconfigured`, `unsupported`, or `error`. No credential is included in the output.(https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/usage-command.png)
 
 ## Endpoint configuration
 

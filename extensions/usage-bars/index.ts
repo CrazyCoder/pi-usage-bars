@@ -39,7 +39,9 @@ import {
 } from "./core";
 
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-const STATUS_KEY = "usage-bars";
+const EXTENSION_ID = "@hk_net/pi-usage-bars";
+const STATUS_KEY = EXTENSION_ID;
+const USAGE_UPDATE_EVENT = `${EXTENSION_ID}:update`;
 const PROVIDERS: readonly ProviderKey[] = [
   "codex",
   "claude",
@@ -123,6 +125,7 @@ class UsageSelectorComponent extends Container implements Focusable {
   private allItems: SubscriptionItem[] = [];
   private filteredItems: SubscriptionItem[] = [];
   private selectedIndex = 0;
+  private viewportStart = 0;
   private loading = true;
   private hint: "loading" | "ready" | "error" = "loading";
   private disposed = false;
@@ -215,6 +218,7 @@ class UsageSelectorComponent extends Container implements Focusable {
     });
     this.filteredItems = this.allItems;
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
+    this.ensureSelectedVisible();
   }
 
   private filterItems(query: string): void {
@@ -224,6 +228,34 @@ class UsageSelectorComponent extends Container implements Focusable {
           item.name.toLowerCase().includes(normalized) || item.provider.includes(normalized))
       : this.allItems;
     this.selectedIndex = Math.min(this.selectedIndex, Math.max(0, this.filteredItems.length - 1));
+    this.viewportStart = 0;
+    this.ensureSelectedVisible();
+  }
+
+  private viewportSize(): number {
+    // Leave room for the frame, search input, hints, and expanded details for
+    // the selected provider. Keeping the provider list bounded avoids pushing
+    // the custom UI beyond short terminal viewports.
+    return Math.max(1, Math.min(8, this.tui.terminal.rows - 14));
+  }
+
+  private ensureSelectedVisible(): void {
+    const size = this.viewportSize();
+    if (this.selectedIndex < this.viewportStart) this.viewportStart = this.selectedIndex;
+    if (this.selectedIndex >= this.viewportStart + size) {
+      this.viewportStart = this.selectedIndex - size + 1;
+    }
+    this.viewportStart = Math.max(0, Math.min(
+      this.viewportStart,
+      Math.max(0, this.filteredItems.length - size),
+    ));
+  }
+
+  private moveSelection(delta: number): void {
+    if (this.filteredItems.length === 0) return;
+    this.selectedIndex = Math.max(0, Math.min(this.filteredItems.length - 1, this.selectedIndex + delta));
+    this.ensureSelectedVisible();
+    this.refresh();
   }
 
   private renderBar(percent: number, width = 16): string {
@@ -239,6 +271,7 @@ class UsageSelectorComponent extends Container implements Focusable {
     const activeBadge = item.isActive ? theme.fg("success", " ✓") : "";
     const name = selected ? theme.fg("accent", theme.bold(item.name)) : item.name;
     this.listContainer.addChild(new Text(`${pointer}${name}${activeBadge}`, 0, 0));
+    if (!selected) return;
 
     const indent = "    ";
     if (item.data.error) {
@@ -323,7 +356,22 @@ class UsageSelectorComponent extends Container implements Focusable {
       this.listContainer.addChild(new Text(this.theme.fg("muted", "  No matching configured providers"), 0, 0));
       return;
     }
-    this.filteredItems.forEach((item, index) => this.renderItem(item, index === this.selectedIndex));
+    this.ensureSelectedVisible();
+    const size = this.viewportSize();
+    const end = Math.min(this.filteredItems.length, this.viewportStart + size);
+    if (this.viewportStart > 0) {
+      this.listContainer.addChild(new Text(this.theme.fg("dim", `  ↑ ${this.viewportStart} more`), 0, 0));
+    }
+    for (let index = this.viewportStart; index < end; index += 1) {
+      this.renderItem(this.filteredItems[index]!, index === this.selectedIndex);
+    }
+    if (end < this.filteredItems.length) {
+      this.listContainer.addChild(new Text(
+        this.theme.fg("dim", `  ↓ ${this.filteredItems.length - end} more`),
+        0,
+        0,
+      ));
+    }
   }
 
   private refresh(): void {
@@ -337,6 +385,7 @@ class UsageSelectorComponent extends Container implements Focusable {
         this.selectedIndex = this.selectedIndex === 0
           ? this.filteredItems.length - 1
           : this.selectedIndex - 1;
+        this.ensureSelectedVisible();
         this.refresh();
       }
       return;
@@ -346,8 +395,17 @@ class UsageSelectorComponent extends Container implements Focusable {
         this.selectedIndex = this.selectedIndex === this.filteredItems.length - 1
           ? 0
           : this.selectedIndex + 1;
+        this.ensureSelectedVisible();
         this.refresh();
       }
+      return;
+    }
+    if (this.keybindings.matches(keyData, "tui.select.pageUp")) {
+      this.moveSelection(-this.viewportSize());
+      return;
+    }
+    if (this.keybindings.matches(keyData, "tui.select.pageDown")) {
+      this.moveSelection(this.viewportSize());
       return;
     }
     if (
@@ -381,6 +439,12 @@ interface UsageState extends UsageByProvider {
 }
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerFlag("usage", {
+    description: "Print one-line usage for the active provider and exit",
+    type: "boolean",
+    default: false,
+  });
+
   const endpoints = resolveUsageEndpoints();
   const state: UsageState = {
     codex: null,
@@ -403,6 +467,7 @@ export default function (pi: ExtensionAPI): void {
   let pollQueued = false;
   let currentContext: ExtensionContext | undefined;
   let sessionController: AbortController | undefined;
+  let providerPollController: AbortController | undefined;
 
   const renderPercent = (theme: Theme, value: number) => {
     const percent = clampPercent(value);
@@ -490,10 +555,18 @@ export default function (pi: ExtensionAPI): void {
     const previous = state.activeProvider;
     state.activeProvider = detectProvider(model);
     if (previous !== state.activeProvider) {
+      providerPollController?.abort();
       updateStatus();
       return true;
     }
     return false;
+  }
+
+  function isClaudeSubscriptionAuth(source: string | undefined): boolean {
+    // Pi 0.84 exposes AuthResult.source as a human-readable label rather than a
+    // credential-type discriminator. Keep the compatibility assumption in one
+    // place until ModelRegistry exposes the resolved credential type directly.
+    return source === "OAuth";
   }
 
   async function resolveCredential(ctx: ExtensionContext, provider: ProviderKey): Promise<CredentialResolution> {
@@ -504,7 +577,7 @@ export default function (pi: ExtensionAPI): void {
 
     try {
       const resolved = await ctx.modelRegistry.getProviderAuth(providerId);
-      if (provider === "claude" && resolved?.source !== "OAuth") return {};
+      if (provider === "claude" && !isClaudeSubscriptionAuth(resolved?.source)) return {};
       const token = resolved?.auth.apiKey;
       if (token) return { token };
       // Some OAuth flows (e.g. kimi-coding) expose the token only as a Bearer
@@ -563,18 +636,25 @@ export default function (pi: ExtensionAPI): void {
 
   async function runPoll(): Promise<void> {
     const ctx = currentContext;
-    const signal = sessionController?.signal;
+    const sessionSignal = sessionController?.signal;
     const provider = state.activeProvider;
-    if (!ctx || !signal || signal.aborted || ctx.mode !== "tui" || !provider) {
+    if (!ctx || !sessionSignal || sessionSignal.aborted || ctx.mode !== "tui" || !provider) {
       updateStatus();
       return;
     }
 
-    await fetchProvider(ctx, provider, signal);
-    if (signal.aborted) return;
-    const data = state[provider];
-    if (data && !data.error) pi.events.emit("usage:update", { provider, ...data });
-    updateStatus();
+    const controller = new AbortController();
+    providerPollController = controller;
+    const signal = AbortSignal.any([sessionSignal, controller.signal]);
+    try {
+      await fetchProvider(ctx, provider, signal);
+      if (signal.aborted) return;
+      const data = state[provider];
+      if (data && !data.error) pi.events.emit(USAGE_UPDATE_EVENT, { provider, ...data });
+      updateStatus();
+    } finally {
+      if (providerPollController === controller) providerPollController = undefined;
+    }
   }
 
   async function poll(): Promise<void> {
@@ -611,7 +691,7 @@ export default function (pi: ExtensionAPI): void {
     return results;
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", async (_event, ctx) => {
     currentContext = ctx;
     sessionController?.abort();
     sessionController = new AbortController();
@@ -619,6 +699,25 @@ export default function (pi: ExtensionAPI): void {
 
     if (pollTimer) clearInterval(pollTimer);
     pollTimer = undefined;
+
+    if (pi.getFlag("usage") === true) {
+      const provider = state.activeProvider;
+      if (!provider) {
+        console.log(JSON.stringify({ extension: EXTENSION_ID, status: "unsupported", provider: ctx.model?.provider }));
+      } else {
+        await fetchProvider(ctx, provider, sessionController.signal);
+        const data = state[provider];
+        console.log(JSON.stringify({
+          extension: EXTENSION_ID,
+          provider,
+          status: !data ? "unconfigured" : data.error ? "error" : "ok",
+          ...(data ?? {}),
+        }));
+      }
+      ctx.shutdown();
+      return;
+    }
+
     if (ctx.mode !== "tui") return;
 
     updateStatus();
@@ -627,6 +726,8 @@ export default function (pi: ExtensionAPI): void {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    providerPollController?.abort();
+    providerPollController = undefined;
     sessionController?.abort();
     sessionController = undefined;
     pollQueued = false;
@@ -634,11 +735,6 @@ export default function (pi: ExtensionAPI): void {
     pollTimer = undefined;
     if (ctx.mode === "tui") ctx.ui.setStatus(STATUS_KEY, undefined);
     currentContext = undefined;
-  });
-
-  pi.on("turn_start", (_event, ctx) => {
-    currentContext = ctx;
-    if (updateProviderFrom(ctx.model)) void poll();
   });
 
   pi.on("model_select", (event, ctx) => {
