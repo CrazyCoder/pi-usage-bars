@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Documentation
+
+- Clarified that Kimi For Coding supports both Pi's Kimi Coding Plan OAuth login and API-key authentication.
+
 ## [0.4.3] - 2026-08-22
 
 ### Fixed

@@ -17,7 +17,7 @@ It adds:
 | Anthropic Claude | `anthropic` | Claude Pro/Max OAuth |
 | ZAI Coding Plan (Global) | `zai` | ZAI API key |
 | ZAI Coding Plan (China) | `zai-coding-cn` | ZAI China API key |
-| Kimi For Coding | `kimi-coding` | Kimi Coding Plan API key |
+| Kimi For Coding | `kimi-coding` | Kimi Coding Plan OAuth or API key |
 | MiniMax Coding Plan (Global) | `minimax` | MiniMax Global API key |
 | MiniMax Coding Plan (China) | `minimax-cn` | MiniMax China API key |
 | OpenRouter | `openrouter` | OpenRouter API key |
