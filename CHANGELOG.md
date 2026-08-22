@@ -6,7 +6,7 @@
 
 ### Fixed
 
-- Resolve kimi-coding OAuth credentials that Pi exposes only as a Bearer `Authorization` header (no `apiKey`), so the Kimi For Coding usage indicator no longer reports "auth resolution failed (configured authentication did not resolve a token)".
+- Resolve kimi-coding OAuth credentials that Pi exposes only as a Bearer `Authorization` header (no `apiKey`), so the Kimi For Coding usage indicator no longer reports "auth resolution failed (configured authentication did not resolve a token)". Thanks to [@Rakkael](https://github.com/Rakkael) for the contribution in [#2](https://github.com/hknet/pi-usage-bars/pull/2).
 
 ### Changed
 
