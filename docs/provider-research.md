@@ -1,6 +1,6 @@
 # Provider support research
 
-This document records providers considered for usage-bar support but currently blocked by the absence of a suitable first-party API. Recheck these findings when a provider publishes a new quota, balance, or billing API.
+This document records providers considered for usage-bar support. Recheck blocked findings when a provider publishes a new quota, balance, or billing API.
 
 ## Qwen Token Plan
 
@@ -22,11 +22,11 @@ Do not estimate account-wide quota from requests observed by this extension: oth
 
 ## Baseten
 
-**Status:** Blocked — no account-usage surface found as of 2026-08-13.
+**Status:** Supported as of 2026-08-28.
 
-Pi 0.84.0 added the `baseten` provider using `BASETEN_API_KEY`. Baseten is primarily usage-billed, and research found no documented API-key endpoint for account balance, credits, budget utilization, or billing usage that this extension could safely query.
+Pi's `baseten` provider resolves `BASETEN_API_KEY`. Baseten documents `GET https://api.baseten.co/v1/billing/usage_summary`, authenticated with `Authorization: Bearer $BASETEN_API_KEY`, with required UTC `start_date` and `end_date` parameters (maximum range: 31 days). The response reports `credits_used` for dedicated serving, training, and Model APIs. The extension queries the current UTC calendar month and reports the aggregate Credits used; it intentionally does not manufacture a remaining balance or quota percentage.
 
-**Recheck when:** Baseten publishes a first-party balance, credits, budget, or billing-usage API accessible with the inference credential or a documented monitoring credential.
+**Recheck when:** Baseten publishes a first-party balance, budget, or quota API that permits a more complete account indicator.
 
 ## Acceptance criteria for a new provider
 

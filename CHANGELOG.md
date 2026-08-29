@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Added Baseten current calendar-month credits-used reporting through its documented key-authenticated billing usage API. Baseten has no documented remaining-credit or quota percentage in this API, so the extension renders only the reported usage.
+
+### Changed
+
+- Updated the development and test baseline to Pi SDK 0.84.4.
+
 ## [0.5.0] - 2026-08-22
 
 ### Added

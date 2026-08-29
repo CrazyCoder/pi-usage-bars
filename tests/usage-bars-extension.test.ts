@@ -469,6 +469,41 @@ describe("usage-bars extension lifecycle", () => {
     expect(harness.handlers.has("turn_start")).toBeFalse();
   });
 
+  it("polls Baseten through Pi auth and renders current-month credits used", async () => {
+    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      expect(String(input)).toContain("https://api.baseten.co/v1/billing/usage_summary?");
+      expect(String(input)).toContain("start_date=");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer resolved-by-pi");
+      return new Response(JSON.stringify({
+        dedicated_usage: { credits_used: 2 },
+        model_apis_usage: { credits_used: 3 },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as typeof fetch;
+
+    const harness = createHarness();
+    const mock = createContext("tui", "baseten", {
+      configured: true,
+      source: "Environment variable",
+      token: "resolved-by-pi",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(mock.authCalls()).toBe(1);
+    expect(harness.emitted).toContainEqual({
+      name: "@hk_net/pi-usage-bars:update",
+      data: expect.objectContaining({
+        provider: "baseten",
+        quotaHidden: true,
+        accountUsage: { amount: 5, unit: "credits", label: "Credits used this month" },
+      }),
+    });
+    expect(mock.statuses.at(-1)).toContain("Baseten");
+    expect(mock.statuses.at(-1)).toContain("Credits used this month");
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("guards the custom command outside interactive TUI mode", async () => {
     const harness = createHarness();
     const mock = createContext("rpc");

@@ -20,6 +20,7 @@ import {
   colorForPercent,
   detectProvider,
   fetchAllUsages,
+  fetchBasetenUsage,
   fetchClaudeUsageWithFallback,
   fetchCodexUsage,
   fetchDeepSeekBalance,
@@ -54,6 +55,7 @@ const PROVIDERS: readonly ProviderKey[] = [
   "deepseek",
   "moonshot",
   "moonshot-cn",
+  "baseten",
 ];
 
 const PROVIDER_LABELS: Record<ProviderKey, string> = {
@@ -68,6 +70,7 @@ const PROVIDER_LABELS: Record<ProviderKey, string> = {
   deepseek: "DeepSeek",
   moonshot: "Moonshot/Kimi API (Global)",
   "moonshot-cn": "Moonshot/Kimi API (China)",
+  baseten: "Baseten",
 };
 
 function formatFinancialAmount(amount: number, unit: string): string {
@@ -320,6 +323,13 @@ class UsageSelectorComponent extends Container implements Focusable {
           0,
         ));
       }
+      if (item.data.accountUsage) {
+        this.listContainer.addChild(new Text(
+          indent + theme.fg("muted", formatAccountBalance(item.data.accountUsage)),
+          0,
+          0,
+        ));
+      }
       if (item.data.accountSpend) {
         this.listContainer.addChild(new Text(
           indent + theme.fg("muted", formatAccountSpend(item.data.accountSpend)),
@@ -458,6 +468,7 @@ export default function (pi: ExtensionAPI): void {
     deepseek: null,
     moonshot: null,
     "moonshot-cn": null,
+    baseten: null,
     activeProvider: null,
     available: {},
   };
@@ -505,6 +516,7 @@ export default function (pi: ExtensionAPI): void {
     if (data.quotaHidden) {
       const financial = [
         data.accountBalance ? formatAccountBalance(data.accountBalance) : undefined,
+        data.accountUsage ? formatAccountBalance(data.accountUsage) : undefined,
         data.accountSpend?.monthly === undefined
           ? undefined
           : `Month · ${formatFinancialAmount(data.accountSpend.monthly, data.accountSpend.unit)}`,
@@ -632,6 +644,7 @@ export default function (pi: ExtensionAPI): void {
     if (provider === "moonshot-cn") {
       state["moonshot-cn"] = await fetchMoonshotBalance(credential.token, "moonshot-cn", { endpoints, signal });
     }
+    if (provider === "baseten") state.baseten = await fetchBasetenUsage(credential.token, { endpoints, signal });
   }
 
   async function runPoll(): Promise<void> {

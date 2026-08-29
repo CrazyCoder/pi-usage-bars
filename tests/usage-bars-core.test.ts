@@ -6,6 +6,7 @@ import {
   clampPercent,
   colorForPercent,
   detectProvider,
+  extractBasetenUsageFromPayload,
   extractDeepSeekBalanceFromPayload,
   extractKimiUsageFromPayload,
   extractMiniMaxUsageFromPayload,
@@ -17,6 +18,7 @@ import {
   fetchClaudeUsage,
   fetchClaudeUsageWithFallback,
   fetchCodexUsage,
+  fetchBasetenUsage,
   fetchDeepSeekBalance,
   fetchKimiUsage,
   fetchMiniMaxUsage,
@@ -76,6 +78,7 @@ const endpoints: UsageEndpoints = {
   deepSeekBalance: "https://api.deepseek.test/user/balance",
   moonshotBalance: "https://api.moonshot.test/v1/users/me/balance",
   moonshotCnBalance: "https://api.moonshot-cn.test/v1/users/me/balance",
+  basetenUsage: "https://api.baseten.test/v1/billing/usage_summary",
 };
 
 describe("formatting and parsing", () => {
@@ -141,6 +144,7 @@ describe("current Pi provider compatibility", () => {
     expect(detectProvider({ provider: "deepseek" })).toBe("deepseek");
     expect(detectProvider({ provider: "moonshotai" })).toBe("moonshot");
     expect(detectProvider({ provider: "moonshotai-cn" })).toBe("moonshot-cn");
+    expect(detectProvider({ provider: "baseten" })).toBe("baseten");
     expect(detectProvider({ provider: "google-gemini-cli" })).toBeNull();
     expect(detectProvider({ provider: "google-antigravity" })).toBeNull();
   });
@@ -156,6 +160,7 @@ describe("current Pi provider compatibility", () => {
     expect(providerToPiProviderId("deepseek")).toBe("deepseek");
     expect(providerToPiProviderId("moonshot")).toBe("moonshotai");
     expect(providerToPiProviderId("moonshot-cn")).toBe("moonshotai-cn");
+    expect(providerToPiProviderId("baseten")).toBe("baseten");
   });
 
   it("resolves global and China endpoint overrides", () => {
@@ -172,6 +177,7 @@ describe("current Pi provider compatibility", () => {
       PI_DEEPSEEK_BALANCE_ENDPOINT: "https://deepseek.example/balance",
       PI_MOONSHOT_BALANCE_ENDPOINT: "https://moonshot.example/balance",
       PI_MOONSHOT_CN_BALANCE_ENDPOINT: "https://moonshot-cn.example/balance",
+      PI_BASETEN_USAGE_ENDPOINT: "https://baseten.example/usage",
     } as NodeJS.ProcessEnv)).toEqual({
       zai: "https://global.example/usage",
       zaiCn: "https://cn.example/usage",
@@ -185,11 +191,39 @@ describe("current Pi provider compatibility", () => {
       deepSeekBalance: "https://deepseek.example/balance",
       moonshotBalance: "https://moonshot.example/balance",
       moonshotCnBalance: "https://moonshot-cn.example/balance",
+      basetenUsage: "https://baseten.example/usage",
     });
   });
 });
 
 describe("provider fetchers", () => {
+  it("fetches Baseten current-month usage through its Pi-resolved API key", async () => {
+    let request: { url: string; authorization: string | null } | undefined;
+    const usage = await fetchBasetenUsage("token", {
+      endpoints,
+      nowMs: Date.parse("2026-02-18T12:00:00.000Z"),
+      fetchFn: async (url, init) => {
+        request = { url, authorization: new Headers(init?.headers).get("authorization") };
+        return jsonResponse(200, {
+          dedicated_usage: { credits_used: 1.25 },
+          training_usage: null,
+          model_apis_usage: { credits_used: 3.5 },
+        });
+      },
+    });
+    expect(usage).toMatchObject({
+      quotaHidden: true,
+      accountUsage: { amount: 4.75, unit: "credits", label: "Credits used this month" },
+    });
+    expect(request).toEqual({
+      url: "https://api.baseten.test/v1/billing/usage_summary?start_date=2026-02-01T00%3A00%3A00.000Z&end_date=2026-02-18T12%3A00%3A00.000Z",
+      authorization: "Bearer token",
+    });
+    expect(extractBasetenUsageFromPayload({ model_apis_usage: { subtotal: 4 } })).toBeNull();
+    expect((await fetchBasetenUsage("token", { endpoints, fetchFn: async () => jsonResponse(403, {}) })).error)
+      .toBe("HTTP 403");
+  });
+
   it("fetches Codex usage and handles HTTP/JSON failures", async () => {
     const usage = await fetchCodexUsage("token", {
       fetchFn: async () => jsonResponse(200, {

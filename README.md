@@ -24,10 +24,11 @@ It adds:
 | DeepSeek | `deepseek` | DeepSeek API key |
 | Moonshot/Kimi API (Global) | `moonshotai` | Moonshot Global API key |
 | Moonshot/Kimi API (China) | `moonshotai-cn` | Moonshot China API key |
+| Baseten | `baseten` | Baseten API key |
 
 DeepSeek shows total, topped-up, and granted balances in the currency returned by the API. Moonshot shows available, cash, and voucher balances; this is separate from the Kimi For Coding subscription provider. Pi uses `MOONSHOT_API_KEY` for both Moonshot regions, so `/usage` automatically hides the expected authentication failure from the region where a shared environment key is not valid.
 
-OpenRouter shows the account credit balance and current daily, weekly, and monthly key spend. If the API key has a configured credit limit, that limit is also rendered as a usage bar.
+OpenRouter shows the account credit balance and current daily, weekly, and monthly key spend. If the API key has a configured credit limit, that limit is also rendered as a usage bar. Baseten shows current calendar-month credits used, aggregated across its documented dedicated, training, and Model APIs billing categories; it does not invent a remaining-balance or quota percentage.
 
 MiniMax Subscription Keys can represent an active Token Plan, purchased Credits, or both. The extension shows quota windows when present and a neutral credit-balance line if a first-party key-authenticated response exposes `points_balance`/`credits_balance`. MiniMax currently exposes Credits-only balances through a console endpoint requiring browser-cookie authentication, so a key-only Credits account is shown as “No active Token Plan” with a direction to check the console rather than a fabricated percentage. The extension does not import browser cookies.
 
@@ -35,7 +36,7 @@ Google Gemini CLI and Google Antigravity are not supported because Pi removed th
 
 ## Requirements
 
-- Pi 0.84.2 or newer
+- Pi 0.84.2 or newer (tested with the current Pi 0.84.4 release)
 - Node.js 22.19 or newer when using the npm-distributed Pi CLI
 
 Authenticate providers through Pi's `/login` command. The extension resolves credentials through Pi's provider API; it does not read or write `auth.json` itself.
@@ -106,6 +107,7 @@ First-party monitoring endpoints can be overridden:
 | `PI_DEEPSEEK_BALANCE_ENDPOINT` | `https://api.deepseek.com/user/balance` |
 | `PI_MOONSHOT_BALANCE_ENDPOINT` | `https://api.moonshot.ai/v1/users/me/balance` |
 | `PI_MOONSHOT_CN_BALANCE_ENDPOINT` | `https://api.moonshot.cn/v1/users/me/balance` |
+| `PI_BASETEN_USAGE_ENDPOINT` | `https://api.baseten.co/v1/billing/usage_summary` |
 
 **Security:** the corresponding provider token is sent as a bearer token to the configured endpoint. Only override these variables with an endpoint you trust.
 
@@ -115,7 +117,11 @@ The Codex and Claude usage endpoints are fixed to their first-party services. Cl
 
 Quota percentages and monetary account data have different meaning and color semantics. OpenRouter, DeepSeek, Moonshot, and MiniMax financial data are rendered as neutral account values; percentages are used only when an actual limit exists.
 
-See [provider support research](docs/provider-research.md) for providers investigated but currently blocked by the absence of a suitable first-party usage API, including Qwen Token Plan and Baseten.
+### Future: Qwen Token Plan
+
+Qwen Token Plan Individual has a documented seven-day Credits quota, but Qwen currently directs users to console usage details and prohibits API-key automation. Add Qwen support only when Qwen documents and authorizes a key-authenticated usage endpoint compatible with Pi's resolved `sk-sp-…` credential. Do not use browser cookies or console-session tokens. The endpoint must expose used Credits, quota limit, reset time, and any separate Credit Pack balance; validate it with redacted fixtures before implementation.
+
+See [provider support research](docs/provider-research.md) for the supporting Qwen investigation.
 
 ## Development
 

@@ -13,7 +13,8 @@ export type ProviderKey =
   | "openrouter"
   | "deepseek"
   | "moonshot"
-  | "moonshot-cn";
+  | "moonshot-cn"
+  | "baseten";
 export type PiProviderId =
   | "openai-codex"
   | "anthropic"
@@ -25,7 +26,8 @@ export type PiProviderId =
   | "openrouter"
   | "deepseek"
   | "moonshotai"
-  | "moonshotai-cn";
+  | "moonshotai-cn"
+  | "baseten";
 
 export interface AccountBalance {
   amount: number;
@@ -47,6 +49,7 @@ export interface UsageData {
   quotaHidden?: boolean;
   accountBalance?: AccountBalance;
   accountBalanceDetails?: AccountBalance[];
+  accountUsage?: AccountBalance;
   accountSpend?: AccountSpend;
   sessionResetsIn?: string;
   weeklyResetsIn?: string;
@@ -81,6 +84,7 @@ export interface UsageEndpoints {
   deepSeekBalance: string;
   moonshotBalance: string;
   moonshotCnBalance: string;
+  basetenUsage: string;
 }
 
 export interface HeadersLike {
@@ -114,6 +118,10 @@ export interface FetchAllUsagesConfig extends FetchConfig {
 
 export interface ClaudeUsageFetchConfig extends RequestConfig {
   cacheFile?: string;
+  nowMs?: number;
+}
+
+export interface BasetenUsageFetchConfig extends FetchConfig {
   nowMs?: number;
 }
 
@@ -173,6 +181,7 @@ export const DEFAULT_OPENROUTER_KEY_ENDPOINT = "https://openrouter.ai/api/v1/key
 export const DEFAULT_DEEPSEEK_BALANCE_ENDPOINT = "https://api.deepseek.com/user/balance";
 export const DEFAULT_MOONSHOT_BALANCE_ENDPOINT = "https://api.moonshot.ai/v1/users/me/balance";
 export const DEFAULT_MOONSHOT_CN_BALANCE_ENDPOINT = "https://api.moonshot.cn/v1/users/me/balance";
+export const DEFAULT_BASETEN_USAGE_ENDPOINT = "https://api.baseten.co/v1/billing/usage_summary";
 
 export function resolveUsageEndpoints(env: NodeJS.ProcessEnv = process.env): UsageEndpoints {
   const configured = (value: string | undefined, fallback: string) => {
@@ -193,6 +202,7 @@ export function resolveUsageEndpoints(env: NodeJS.ProcessEnv = process.env): Usa
     deepSeekBalance: configured(env.PI_DEEPSEEK_BALANCE_ENDPOINT, DEFAULT_DEEPSEEK_BALANCE_ENDPOINT),
     moonshotBalance: configured(env.PI_MOONSHOT_BALANCE_ENDPOINT, DEFAULT_MOONSHOT_BALANCE_ENDPOINT),
     moonshotCnBalance: configured(env.PI_MOONSHOT_CN_BALANCE_ENDPOINT, DEFAULT_MOONSHOT_CN_BALANCE_ENDPOINT),
+    basetenUsage: configured(env.PI_BASETEN_USAGE_ENDPOINT, DEFAULT_BASETEN_USAGE_ENDPOINT),
   };
 }
 
@@ -462,6 +472,7 @@ function snapshotUsage(usage: UsageData, nowMs = Date.now()): UsageData {
     quotaHidden: usage.quotaHidden,
     accountBalance: usage.accountBalance,
     accountBalanceDetails: usage.accountBalanceDetails,
+    accountUsage: usage.accountUsage,
     accountSpend: usage.accountSpend,
     sessionResetsAt: usage.sessionResetsAt,
     weeklyResetsAt: usage.weeklyResetsAt,
@@ -1068,6 +1079,58 @@ export async function fetchDeepSeekBalance(token: string, config: FetchConfig = 
   };
 }
 
+export function extractBasetenUsageFromPayload(payload: unknown): UsageData | null {
+  const root = asObject(payload);
+  if (!root) return null;
+  const sections = [root.dedicated_usage, root.training_usage, root.model_apis_usage].map(asObject);
+  const creditsUsed = sections
+    .map((section) => readNumber(section?.credits_used))
+    .filter((value): value is number => value !== null);
+  if (creditsUsed.length === 0) return null;
+
+  return {
+    session: 0,
+    weekly: 0,
+    quotaHidden: true,
+    accountUsage: {
+      amount: Number(creditsUsed.reduce((sum, value) => sum + value, 0).toFixed(6)),
+      unit: "credits",
+      label: "Credits used this month",
+    },
+  };
+}
+
+function basetenMonthRange(nowMs: number): { startDate: string; endDate: string } {
+  const now = new Date(nowMs);
+  return {
+    startDate: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    endDate: now.toISOString(),
+  };
+}
+
+export async function fetchBasetenUsage(token: string, config: BasetenUsageFetchConfig = {}): Promise<UsageData> {
+  const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
+  const { startDate, endDate } = basetenMonthRange(config.nowMs ?? Date.now());
+  let url: string;
+  try {
+    const parsed = new URL(endpoints.basetenUsage);
+    parsed.searchParams.set("start_date", startDate);
+    parsed.searchParams.set("end_date", endDate);
+    url = parsed.toString();
+  } catch {
+    return { session: 0, weekly: 0, error: "invalid Baseten usage endpoint" };
+  }
+  const result = await requestJson(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  }, config);
+  if (!result.ok) return { session: 0, weekly: 0, error: result.error };
+  return extractBasetenUsageFromPayload(result.data) ?? {
+    session: 0,
+    weekly: 0,
+    error: "unrecognized response shape",
+  };
+}
+
 export function extractMoonshotBalanceFromPayload(
   payload: unknown,
   provider: "moonshot" | "moonshot-cn" = "moonshot",
@@ -1177,6 +1240,7 @@ export function detectProvider(
     case "deepseek": return "deepseek";
     case "moonshotai": return "moonshot";
     case "moonshotai-cn": return "moonshot-cn";
+    case "baseten": return "baseten";
     default: return null;
   }
 }
@@ -1194,6 +1258,7 @@ export function providerToPiProviderId(provider: ProviderKey): PiProviderId {
     case "deepseek": return "deepseek";
     case "moonshot": return "moonshotai";
     case "moonshot-cn": return "moonshotai-cn";
+    case "baseten": return "baseten";
   }
 }
 
@@ -1225,6 +1290,7 @@ export async function fetchAllUsages(
     deepseek: null,
     moonshot: null,
     "moonshot-cn": null,
+    baseten: null,
   };
   const tasks: Promise<void>[] = [];
 
@@ -1257,6 +1323,7 @@ export async function fetchAllUsages(
   if (tokens["moonshot-cn"]) {
     assign("moonshot-cn", fetchMoonshotBalance(tokens["moonshot-cn"], "moonshot-cn", { ...config, endpoints }));
   }
+  if (tokens.baseten) assign("baseten", fetchBasetenUsage(tokens.baseten, { ...config, endpoints }));
 
   await Promise.all(tasks);
 
