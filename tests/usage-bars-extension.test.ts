@@ -185,11 +185,11 @@ describe("usage-bars extension lifecycle", () => {
           return {
           session: 25,
           weekly: 25,
-          sessionLabel: "Budget",
+          sessionLabel: "Monthly",
           weeklyLabel: "Today",
           sessionResetsIn: "2d",
           weeklyResetsIn: "12h",
-          sessionQuota: { used: 1250, limit: 5000, unit: "USD", label: "Budget" },
+          sessionQuota: { used: 1250, limit: 5000, unit: "USD", label: "Monthly" },
           weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
           };
         },
@@ -207,7 +207,7 @@ describe("usage-bars extension lifecycle", () => {
       name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "central", session: 25, weekly: 25 }),
     });
-    expect(mock.statuses.at(-1)).toContain("Central B ██░░░░░░ 25% $1.25K / $5K ⟳ 2d");
+    expect(mock.statuses.at(-1)).toContain("Central M ██░░░░░░ 25% $1.25K / $5K ⟳ 2d");
     expect(mock.statuses.at(-1)).toContain("D ██░░░░░░ 25% $12.5 / $50 ⟳ 12h");
     await harness.commands.get("central-quota")?.handler("", mock.context);
     expect(fetchCalls).toBe(2);

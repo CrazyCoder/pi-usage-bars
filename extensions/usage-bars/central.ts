@@ -221,13 +221,13 @@ export function buildCentralUsage(
   return {
     session: limit.limit > 0 ? limit.used / limit.limit * 100 : 0,
     weekly: dailySpent / dailyLimit * 100,
-    sessionLabel: "Budget",
+    sessionLabel: "Monthly",
     weeklyLabel: "Today",
     sessionResetsIn: limit.refillNext
       ? formatDuration(Math.max(0, limit.refillNext - nowMs) / 1000)
       : undefined,
     weeklyResetsIn: timeUntilLocalMidnight(nowMs),
-    sessionQuota: { used: limit.used, limit: limit.limit, unit: "USD", label: "Budget" },
+    sessionQuota: { used: limit.used, limit: limit.limit, unit: "USD", label: "Monthly" },
     weeklyQuota: { used: dailySpent, limit: dailyLimit, unit: "USD", label: "Today" },
     fetchedAt: nowMs,
   };

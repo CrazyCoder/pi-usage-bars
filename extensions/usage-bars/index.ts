@@ -597,8 +597,8 @@ export default function (
         ? "I "
         : data.sessionLabel === "Key limit"
           ? "L "
-          : data.sessionLabel === "Budget"
-            ? "B "
+          : data.sessionLabel === "Monthly"
+            ? "M "
             : "S ";
     const quotaLanes: string[] = [];
     if (!data.sessionHidden) {

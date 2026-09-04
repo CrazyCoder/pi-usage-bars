@@ -142,7 +142,7 @@ describe("formatting and parsing", () => {
 describe("JetBrains Central usage", () => {
   const now = new Date(2026, 8, 4, 12).getTime();
 
-  it("builds budget and daily-spend quota lanes", () => {
+  it("builds monthly and daily-spend quota lanes", () => {
     const limit = parseCentralLimit({
       usedDollars: "1250.50",
       maxDollars: "5000.00",
@@ -152,10 +152,10 @@ describe("JetBrains Central usage", () => {
     expect(usage.session).toBeCloseTo(25.01);
     expect(usage.weekly).toBe(25);
     expect(usage).toMatchObject({
-      sessionLabel: "Budget",
+      sessionLabel: "Monthly",
       weeklyLabel: "Today",
       sessionResetsIn: "2d",
-      sessionQuota: { used: 1250.5, limit: 5000, unit: "USD", label: "Budget" },
+      sessionQuota: { used: 1250.5, limit: 5000, unit: "USD", label: "Monthly" },
       weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
       fetchedAt: now,
     });
