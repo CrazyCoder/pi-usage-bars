@@ -204,6 +204,14 @@ describe("JetBrains Central usage", () => {
     expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({ retained: true, centralDailyLimitUsd: 75 });
   });
 
+  it("refuses to overwrite malformed user configuration", () => {
+    const configPath = tempFile("usage-bars-invalid.json");
+    fs.writeFileSync(configPath, "{invalid");
+    expect(() => getCentralDailyLimit(configPath)).toThrow("Cannot parse");
+    expect(() => setCentralDailyLimit(75, configPath)).toThrow("Cannot parse");
+    expect(fs.readFileSync(configPath, "utf8")).toBe("{invalid");
+  });
+
   it("tracks live command results and reports failures", async () => {
     const statePath = tempFile("central-state.json");
     const configPath = tempFile("usage-bars-default.json");

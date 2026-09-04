@@ -53,6 +53,28 @@ function finiteNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function errorCode(error: unknown): string | undefined {
+  return isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+}
+
+function readConfig(configPath: string): Record<string, unknown> {
+  let text: string;
+  try {
+    text = readFileSync(configPath, "utf8");
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return {};
+    throw error;
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`Cannot parse ${configPath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!isRecord(value)) throw new Error(`${configPath} must contain a JSON object`);
+  return value;
+}
+
 export function parseCentralLimit(value: unknown): CentralLimit {
   if (!isRecord(value)) throw new Error("invalid Central limit response");
   const used = finiteNumber(value.usedDollars);
@@ -129,7 +151,7 @@ async function acquireLock(path: string, signal?: AbortSignal): Promise<() => vo
       closeSync(descriptor);
       return () => rmSync(path, { force: true });
     } catch (error) {
-      const code = isRecord(error) && typeof error.code === "string" ? error.code : undefined;
+      const code = errorCode(error);
       if (code !== "EEXIST") throw error;
       try {
         if (Date.now() - statSync(path).mtimeMs > 10_000) {
@@ -166,25 +188,18 @@ async function trackDailySpend(
 }
 
 export function getCentralDailyLimit(configPath = CENTRAL_CONFIG_PATH): number {
-  try {
-    const value: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-    if (!isRecord(value)) return DEFAULT_CENTRAL_DAILY_LIMIT_USD;
-    const configured = finiteNumber(value.centralDailyLimitUsd);
-    return configured !== undefined && configured > 0 ? configured : DEFAULT_CENTRAL_DAILY_LIMIT_USD;
-  } catch {
-    return DEFAULT_CENTRAL_DAILY_LIMIT_USD;
+  const value = readConfig(configPath);
+  if (!("centralDailyLimitUsd" in value)) return DEFAULT_CENTRAL_DAILY_LIMIT_USD;
+  const configured = finiteNumber(value.centralDailyLimitUsd);
+  if (configured === undefined || configured <= 0) {
+    throw new Error(`${configPath}: centralDailyLimitUsd must be greater than zero`);
   }
+  return configured;
 }
 
 export function setCentralDailyLimit(limit: number, configPath = CENTRAL_CONFIG_PATH): void {
   if (!Number.isFinite(limit) || limit <= 0) throw new Error("daily limit must be greater than zero");
-  let existing: Record<string, unknown> = {};
-  try {
-    const value: unknown = JSON.parse(readFileSync(configPath, "utf8"));
-    if (isRecord(value)) existing = value;
-  } catch {
-    // A missing config starts with defaults.
-  }
+  const existing = readConfig(configPath);
   mkdirSync(dirname(configPath), { recursive: true });
   const temporary = `${configPath}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify({ ...existing, centralDailyLimitUsd: limit }, null, 2)}\n`, { mode: 0o600 });

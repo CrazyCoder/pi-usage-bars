@@ -236,6 +236,17 @@ describe("usage-bars extension lifecycle", () => {
     expect(mock.notifications).toContain("Usage: /central-daily-limit <amount greater than zero>");
   });
 
+  it("reports malformed Central configuration from the limit command", async () => {
+    const harness = createHarness({
+      dependencies: {
+        getCentralDailyLimit: () => { throw new Error("invalid usage-bars.json"); },
+      },
+    });
+    const mock = createContext("tui");
+    await harness.commands.get("central-daily-limit")?.handler("", mock.context);
+    expect(mock.notifications).toContain("invalid usage-bars.json");
+  });
+
   it("resolves kimi-coding tokens exposed only via the Authorization header", async () => {
     let requestHeaders: HeadersInit | undefined;
     globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {

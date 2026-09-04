@@ -848,10 +848,14 @@ export default function (
     handler: async (args, ctx) => {
       const value = args.trim();
       if (!value) {
-        ctx.ui.notify(
-          `Central daily limit: $${dependencies.getCentralDailyLimit().toFixed(2)}\n${dependencies.centralConfigPath}`,
-          "info",
-        );
+        try {
+          ctx.ui.notify(
+            `Central daily limit: $${dependencies.getCentralDailyLimit().toFixed(2)}\n${dependencies.centralConfigPath}`,
+            "info",
+          );
+        } catch (error) {
+          ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+        }
         return;
       }
       const limit = Number(value.replace(/^\$/, ""));

@@ -13,6 +13,7 @@ First `@jetserge/pi-usage-bars` release, forked from [hknet/pi-usage-bars](https
 - Track today's spend from positive deltas in `central limit --json`, following the same local-snapshot model as JBCentralGUI.
 - Reset the daily baseline when the Central account or allowance period changes, using a local hash instead of storing account details.
 - Add `/central-daily-limit` and `~/.pi/agent/usage-bars.json` configuration for the daily spending limit. The default is $50.
+- Reject malformed daily-limit configuration without overwriting the user's file.
 - Verify the real npm tarball before publishing.
 
 ### Changed
