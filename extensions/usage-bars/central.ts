@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   mkdirSync,
@@ -30,6 +31,7 @@ export interface CentralLimit {
   used: number;
   limit: number;
   refillNext?: number;
+  trackingId?: string;
 }
 
 export interface CentralDailyState {
@@ -37,6 +39,7 @@ export interface CentralDailyState {
   date: string;
   spent: number;
   lastUsed: number;
+  trackingId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -55,11 +58,24 @@ export function parseCentralLimit(value: unknown): CentralLimit {
   const used = finiteNumber(value.usedDollars);
   const limit = finiteNumber(value.maxDollars);
   const refillNext = finiteNumber(value.refillNext);
-  if (used === undefined || limit === undefined || limit < 0) {
+  if (used === undefined || used < 0 || limit === undefined || limit < 0) {
     if (value.managed === true) throw new Error("Central Server manages limits and exposes no usage totals");
     throw new Error("Central limit response has no usage totals");
   }
-  return { used, limit, ...(refillNext !== undefined && refillNext > 0 ? { refillNext } : {}) };
+  const identity = [
+    typeof value.email === "string" ? value.email : "",
+    typeof value.licenseName === "string" ? value.licenseName : "",
+    String(finiteNumber(value.refillLast) ?? ""),
+  ].join("\0");
+  const trackingId = identity === "\0\0"
+    ? undefined
+    : createHash("sha256").update(identity).digest("hex").slice(0, 16);
+  return {
+    used,
+    limit,
+    ...(refillNext !== undefined && refillNext > 0 ? { refillNext } : {}),
+    ...(trackingId ? { trackingId } : {}),
+  };
 }
 
 function localDate(nowMs: number): string {
@@ -73,15 +89,19 @@ export function updateCentralDailyState(
   previous: CentralDailyState | undefined,
   used: number,
   nowMs = Date.now(),
+  trackingId?: string,
 ): CentralDailyState {
   const date = localDate(nowMs);
-  if (!previous) return { version: 1, date, spent: 0, lastUsed: used };
+  if (!previous || previous.trackingId !== trackingId) {
+    return { version: 1, date, spent: 0, lastUsed: used, ...(trackingId ? { trackingId } : {}) };
+  }
   const delta = Math.max(0, used - previous.lastUsed);
   return {
     version: 1,
     date,
     spent: Math.round(((previous.date === date ? previous.spent : 0) + delta) * 100) / 100,
     lastUsed: used,
+    ...(trackingId ? { trackingId } : {}),
   };
 }
 
@@ -92,7 +112,8 @@ function readDailyState(path: string): CentralDailyState | undefined {
     const spent = finiteNumber(value.spent);
     const lastUsed = finiteNumber(value.lastUsed);
     if (spent === undefined || spent < 0 || lastUsed === undefined) return undefined;
-    return { version: 1, date: value.date, spent, lastUsed };
+    const trackingId = typeof value.trackingId === "string" ? value.trackingId : undefined;
+    return { version: 1, date: value.date, spent, lastUsed, ...(trackingId ? { trackingId } : {}) };
   } catch {
     return undefined;
   }
@@ -128,11 +149,12 @@ async function trackDailySpend(
   used: number,
   statePath: string,
   nowMs: number,
+  trackingId?: string,
   signal?: AbortSignal,
 ): Promise<number> {
   const release = await acquireLock(`${statePath}.lock`, signal);
   try {
-    const next = updateCentralDailyState(readDailyState(statePath), used, nowMs);
+    const next = updateCentralDailyState(readDailyState(statePath), used, nowMs, trackingId);
     mkdirSync(dirname(statePath), { recursive: true });
     const temporary = `${statePath}.${process.pid}.tmp`;
     writeFileSync(temporary, `${JSON.stringify(next)}\n`, { mode: 0o600 });
@@ -261,6 +283,7 @@ export async function fetchCentralUsage(options: CentralUsageOptions = {}): Prom
       limit.used,
       options.statePath ?? CENTRAL_STATE_PATH,
       nowMs,
+      limit.trackingId,
       options.signal,
     );
     return buildCentralUsage(

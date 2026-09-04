@@ -101,7 +101,7 @@ The command writes the same setting that can be edited by hand in `~/.pi/agent/u
 }
 ```
 
-Central exposes the current allowance total but no daily breakdown. The extension therefore stores the last observed total in `~/.pi/agent/usage-bars-central-state.json` and sums positive changes during the local calendar day, matching JBCentralGUI's snapshot method. The first observation is a baseline, so the daily amount becomes complete after the extension has observed usage from the start of a day.
+Central exposes the current allowance total but no daily breakdown. The extension therefore stores the last observed total in `~/.pi/agent/usage-bars-central-state.json` and sums positive changes during the local calendar day, matching JBCentralGUI's snapshot method. The first observation is a baseline, so the daily amount becomes complete after the extension has observed usage from the start of a day. An account switch or a new allowance period establishes a new baseline instead of counting the new total as today's spend.
 
 ### `/usage`
 

@@ -161,16 +161,39 @@ describe("JetBrains Central usage", () => {
     });
   });
 
+  it("changes the private tracking key across accounts and allowance periods", () => {
+    const first = parseCentralLimit({
+      email: "user@example.com",
+      licenseName: "AI Pro",
+      refillLast: 1,
+      usedDollars: "1",
+      maxDollars: "100",
+    });
+    const nextPeriod = parseCentralLimit({
+      email: "user@example.com",
+      licenseName: "AI Pro",
+      refillLast: 2,
+      usedDollars: "1",
+      maxDollars: "100",
+    });
+    expect(first.trackingId).toHaveLength(16);
+    expect(first.trackingId).not.toContain("user@example.com");
+    expect(first.trackingId).not.toBe(nextPeriod.trackingId);
+    expect(() => parseCentralLimit({ usedDollars: "-1", maxDollars: "100" })).toThrow("usage totals");
+  });
+
   it("tracks positive daily deltas and resets the day without losing the first delta", () => {
     const firstTime = new Date(2026, 8, 4, 23, 50).getTime();
-    const first = updateCentralDailyState(undefined, 10, firstTime);
-    const sameDay = updateCentralDailyState(first, 12.5, firstTime + 5 * 60_000);
-    const nextDay = updateCentralDailyState(sameDay, 13.5, firstTime + 20 * 60_000);
-    const afterRefill = updateCentralDailyState(nextDay, 1, firstTime + 25 * 60_000);
+    const first = updateCentralDailyState(undefined, 10, firstTime, "account-a");
+    const sameDay = updateCentralDailyState(first, 12.5, firstTime + 5 * 60_000, "account-a");
+    const nextDay = updateCentralDailyState(sameDay, 13.5, firstTime + 20 * 60_000, "account-a");
+    const afterRefill = updateCentralDailyState(nextDay, 1, firstTime + 25 * 60_000, "account-a");
+    const switchedAccount = updateCentralDailyState(afterRefill, 80, firstTime + 30 * 60_000, "account-b");
     expect(first.spent).toBe(0);
     expect(sameDay.spent).toBe(2.5);
     expect(nextDay.spent).toBe(1);
     expect(afterRefill).toMatchObject({ spent: 1, lastUsed: 1 });
+    expect(switchedAccount).toMatchObject({ spent: 0, lastUsed: 80, trackingId: "account-b" });
   });
 
   it("persists the configurable daily limit without dropping other settings", () => {
