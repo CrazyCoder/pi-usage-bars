@@ -16,6 +16,13 @@ import {
   type TUI,
 } from "@earendil-works/pi-tui";
 import {
+  CENTRAL_CONFIG_PATH,
+  fetchCentralUsage as defaultFetchCentralUsage,
+  getCentralDailyLimit as defaultGetCentralDailyLimit,
+  setCentralDailyLimit as defaultSetCentralDailyLimit,
+  type CentralUsageOptions,
+} from "./central";
+import {
   clampPercent,
   colorForPercent,
   detectProvider,
@@ -32,6 +39,8 @@ import {
   providerToPiProviderId,
   resolveUsageEndpoints,
   type AccountBalance,
+  type AccountQuota,
+  type AuthenticatedProviderKey,
   type AccountSpend,
   type ProviderKey,
   type UsageByProvider,
@@ -40,10 +49,11 @@ import {
 } from "./core";
 
 const POLL_INTERVAL_MS = 2 * 60 * 1000;
-const EXTENSION_ID = "@hk_net/pi-usage-bars";
+const EXTENSION_ID = "@jetserge/pi-usage-bars";
 const STATUS_KEY = EXTENSION_ID;
 const USAGE_UPDATE_EVENT = `${EXTENSION_ID}:update`;
 const PROVIDERS: readonly ProviderKey[] = [
+  "central",
   "codex",
   "claude",
   "zai",
@@ -57,8 +67,12 @@ const PROVIDERS: readonly ProviderKey[] = [
   "moonshot-cn",
   "baseten",
 ];
+const AUTHENTICATED_PROVIDERS = PROVIDERS.filter(
+  (provider): provider is AuthenticatedProviderKey => provider !== "central",
+);
 
 const PROVIDER_LABELS: Record<ProviderKey, string> = {
+  central: "Central",
   codex: "Codex",
   claude: "Claude",
   zai: "ZAI Coding Plan (Global)",
@@ -88,6 +102,29 @@ function formatFinancialAmount(amount: number, unit: string): string {
 
 function formatAccountBalance(balance: AccountBalance): string {
   return `${balance.label} · ${formatFinancialAmount(balance.amount, balance.unit)}`;
+}
+
+function formatCompactFinancialAmount(amount: number, unit: string): string {
+  if (/^[A-Z]{3}$/.test(unit)) {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: unit,
+      notation: "compact",
+      maximumFractionDigits: 2,
+    }).format(amount);
+  }
+  return `${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(amount)} ${unit}`;
+}
+
+function formatAccountQuota(quota: AccountQuota, compact = false): string {
+  const format = compact ? formatCompactFinancialAmount : formatFinancialAmount;
+  const amounts = `${format(quota.used, quota.unit)} / ${format(quota.limit, quota.unit)}`;
+  return compact ? amounts : `${quota.label} · ${amounts}`;
+}
+
+function formatPercent(value: number): string {
+  const percent = Math.max(0, Math.min(100, value));
+  return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
 }
 
 function formatAccountSpend(spend: AccountSpend): string {
@@ -293,17 +330,23 @@ class UsageSelectorComponent extends Container implements Focusable {
 
       if (!item.data.quotaHidden) {
         if (!item.data.sessionHidden) {
+          const amount = item.data.sessionQuota
+            ? theme.fg("dim", `  ${formatAccountQuota(item.data.sessionQuota, true)}`)
+            : "";
           this.listContainer.addChild(new Text(
             indent + theme.fg("muted", sessionLabel) + this.renderBar(session) + " " +
-              theme.fg(colorForPercent(session), `${session}%`.padStart(4)) + sessionReset,
+              theme.fg(colorForPercent(session), formatPercent(item.data.session).padStart(4)) + amount + sessionReset,
             0,
             0,
           ));
         }
         if (!item.data.weeklyHidden) {
+          const amount = item.data.weeklyQuota
+            ? theme.fg("dim", `  ${formatAccountQuota(item.data.weeklyQuota, true)}`)
+            : "";
           this.listContainer.addChild(new Text(
             indent + theme.fg("muted", weeklyLabel) + this.renderBar(weekly) + " " +
-              theme.fg(colorForPercent(weekly), `${weekly}%`.padStart(4)) + weeklyReset,
+              theme.fg(colorForPercent(weekly), formatPercent(item.data.weekly).padStart(4)) + amount + weeklyReset,
             0,
             0,
           ));
@@ -448,7 +491,25 @@ interface UsageState extends UsageByProvider {
   available: Partial<Record<ProviderKey, boolean>>;
 }
 
-export default function (pi: ExtensionAPI): void {
+export interface UsageBarsDependencies {
+  centralConfigPath: string;
+  fetchCentralUsage(options?: CentralUsageOptions): Promise<UsageData>;
+  getCentralDailyLimit(): number;
+  setCentralDailyLimit(limit: number): void;
+}
+
+const DEFAULT_DEPENDENCIES: UsageBarsDependencies = {
+  centralConfigPath: CENTRAL_CONFIG_PATH,
+  fetchCentralUsage: defaultFetchCentralUsage,
+  getCentralDailyLimit: defaultGetCentralDailyLimit,
+  setCentralDailyLimit: defaultSetCentralDailyLimit,
+};
+
+export default function (
+  pi: ExtensionAPI,
+  overrides: Partial<UsageBarsDependencies> = {},
+): void {
+  const dependencies = { ...DEFAULT_DEPENDENCIES, ...overrides };
   pi.registerFlag("usage", {
     description: "Print one-line usage for the active provider and exit",
     type: "boolean",
@@ -457,6 +518,7 @@ export default function (pi: ExtensionAPI): void {
 
   const endpoints = resolveUsageEndpoints();
   const state: UsageState = {
+    central: null,
     codex: null,
     claude: null,
     zai: null,
@@ -480,10 +542,8 @@ export default function (pi: ExtensionAPI): void {
   let sessionController: AbortController | undefined;
   let providerPollController: AbortController | undefined;
 
-  const renderPercent = (theme: Theme, value: number) => {
-    const percent = clampPercent(value);
-    return theme.fg(colorForPercent(percent), `${percent}%`);
-  };
+  const renderPercent = (theme: Theme, value: number) =>
+    theme.fg(colorForPercent(value), formatPercent(value));
 
   const renderBar = (theme: Theme, value: number) => {
     const percent = clampPercent(value);
@@ -537,17 +597,22 @@ export default function (pi: ExtensionAPI): void {
         ? "I "
         : data.sessionLabel === "Key limit"
           ? "L "
-          : "S ";
+          : data.sessionLabel === "Budget"
+            ? "B "
+            : "S ";
     const quotaLanes: string[] = [];
     if (!data.sessionHidden) {
       quotaLanes.push(
-        theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, session) +
+        theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, data.session) +
+          (data.sessionQuota ? theme.fg("muted", ` ${formatAccountQuota(data.sessionQuota, true)}`) : "") +
           (data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : ""),
       );
     }
     if (!data.weeklyHidden) {
+      const weeklyPrefix = data.weeklyLabel === "Today" ? "D " : "W ";
       quotaLanes.push(
-        theme.fg("muted", "W ") + renderBar(theme, weekly) + " " + renderPercent(theme, weekly) +
+        theme.fg("muted", weeklyPrefix) + renderBar(theme, weekly) + " " + renderPercent(theme, data.weekly) +
+          (data.weeklyQuota ? theme.fg("muted", ` ${formatAccountQuota(data.weeklyQuota, true)}`) : "") +
           (data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : ""),
       );
     }
@@ -581,7 +646,7 @@ export default function (pi: ExtensionAPI): void {
     return source === "OAuth";
   }
 
-  async function resolveCredential(ctx: ExtensionContext, provider: ProviderKey): Promise<CredentialResolution> {
+  async function resolveCredential(ctx: ExtensionContext, provider: AuthenticatedProviderKey): Promise<CredentialResolution> {
     const providerId = providerToPiProviderId(provider);
     if (!ctx.modelRegistry.getProvider(providerId)) return {};
     const status = ctx.modelRegistry.getProviderAuthStatus(providerId);
@@ -609,6 +674,11 @@ export default function (pi: ExtensionAPI): void {
     provider: ProviderKey,
     signal: AbortSignal,
   ): Promise<void> {
+    if (provider === "central") {
+      state.available.central = true;
+      state.central = await dependencies.fetchCentralUsage({ signal });
+      return;
+    }
     const credential = await resolveCredential(ctx, provider);
     if (signal.aborted) return;
     state.available[provider] = Boolean(credential.token || credential.error);
@@ -685,19 +755,23 @@ export default function (pi: ExtensionAPI): void {
   }
 
   async function fetchAllForContext(ctx: ExtensionContext, signal: AbortSignal): Promise<UsageByProvider> {
-    const resolutions = await Promise.all(PROVIDERS.map(async (provider) =>
+    const resolutions = await Promise.all(AUTHENTICATED_PROVIDERS.map(async (provider) =>
       [provider, await resolveCredential(ctx, provider)] as const));
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
     const tokens: UsageTokens = {};
-    const authErrors: Partial<Record<ProviderKey, string>> = {};
+    const authErrors: Partial<Record<AuthenticatedProviderKey, string>> = {};
     for (const [provider, resolution] of resolutions) {
       if (resolution.token) tokens[provider] = resolution.token;
       if (resolution.error) authErrors[provider] = resolution.error;
     }
 
-    const results = await fetchAllUsages(tokens, { endpoints, signal });
-    for (const provider of PROVIDERS) {
+    const [results, central] = await Promise.all([
+      fetchAllUsages(tokens, { endpoints, signal }),
+      state.activeProvider === "central" ? dependencies.fetchCentralUsage({ signal }) : null,
+    ]);
+    results.central = central;
+    for (const provider of AUTHENTICATED_PROVIDERS) {
       const error = authErrors[provider];
       if (error) results[provider] = { session: 0, weekly: 0, error: `auth resolution failed (${error})` };
     }
@@ -754,6 +828,45 @@ export default function (pi: ExtensionAPI): void {
     currentContext = ctx;
     updateProviderFrom(event.model);
     void poll();
+  });
+
+  pi.registerCommand("central-quota", {
+    description: "Refresh JetBrains Central usage",
+    handler: async (_args, ctx) => {
+      currentContext = ctx;
+      updateProviderFrom(ctx.model);
+      if (state.activeProvider !== "central") {
+        ctx.ui.notify("The active model is not routed through JetBrains Central", "warning");
+        return;
+      }
+      await poll();
+    },
+  });
+
+  pi.registerCommand("central-daily-limit", {
+    description: "Show or set the Central daily spending limit",
+    handler: async (args, ctx) => {
+      const value = args.trim();
+      if (!value) {
+        ctx.ui.notify(
+          `Central daily limit: $${dependencies.getCentralDailyLimit().toFixed(2)}\n${dependencies.centralConfigPath}`,
+          "info",
+        );
+        return;
+      }
+      const limit = Number(value.replace(/^\$/, ""));
+      if (!Number.isFinite(limit) || limit <= 0) {
+        ctx.ui.notify("Usage: /central-daily-limit <amount greater than zero>", "error");
+        return;
+      }
+      try {
+        dependencies.setCentralDailyLimit(limit);
+        ctx.ui.notify(`Central daily limit set to $${limit.toFixed(2)}`, "info");
+        if (state.activeProvider === "central") void poll();
+      } catch (error) {
+        ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+      }
+    },
   });
 
   pi.registerCommand("usage", {

@@ -4,7 +4,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
-import usageBarsExtension from "../extensions/usage-bars/index";
+import usageBarsExtension, { type UsageBarsDependencies } from "../extensions/usage-bars/index";
 
 interface Harness {
   handlers: Map<string, (event: unknown, ctx: ExtensionContext) => unknown>;
@@ -12,7 +12,7 @@ interface Harness {
   emitted: Array<{ name: string; data: unknown }>;
 }
 
-function createHarness(options: { usageFlag?: boolean } = {}): Harness {
+function createHarness(options: { usageFlag?: boolean; dependencies?: Partial<UsageBarsDependencies> } = {}): Harness {
   const harness: Harness = {
     handlers: new Map(),
     commands: new Map(),
@@ -35,14 +35,21 @@ function createHarness(options: { usageFlag?: boolean } = {}): Harness {
       },
     },
   } as unknown as ExtensionAPI;
-  usageBarsExtension(pi);
+  usageBarsExtension(pi, options.dependencies);
   return harness;
 }
 
 function createContext(
   mode: "tui" | "rpc" | "json" | "print",
   provider = "openai",
-  options: { configured?: boolean; source?: string; token?: string; authHeaders?: Record<string, string> } = {},
+  options: {
+    configured?: boolean;
+    source?: string;
+    token?: string;
+    authHeaders?: Record<string, string>;
+    baseUrl?: string;
+    apiKey?: string;
+  } = {},
 ) {
   const statuses: Array<string | undefined> = [];
   const statusKeys: string[] = [];
@@ -57,7 +64,7 @@ function createContext(
   const context = {
     mode,
     hasUI: mode === "tui" || mode === "rpc",
-    model: { provider, id: "test-model" },
+    model: { provider, id: "test-model", baseUrl: options.baseUrl, apiKey: options.apiKey },
     ui: {
       theme,
       setStatus: (key: string, value: string | undefined) => {
@@ -117,7 +124,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(lines).toHaveLength(1);
     expect(JSON.parse(lines[0]!)).toEqual({
-      extension: "@hk_net/pi-usage-bars",
+      extension: "@jetserge/pi-usage-bars",
       status: "unsupported",
       provider: "google",
     });
@@ -161,13 +168,72 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "codex", session: 12, weekly: 34 }),
     });
     expect(mock.statuses.at(-1)).toContain("Codex");
-    expect(mock.statusKeys.at(-1)).toBe("@hk_net/pi-usage-bars");
+    expect(mock.statusKeys.at(-1)).toBe("@jetserge/pi-usage-bars");
 
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+  it("uses Central usage for any model routed through Central", async () => {
+    let fetchCalls = 0;
+    const harness = createHarness({
+      dependencies: {
+        fetchCentralUsage: async () => {
+          fetchCalls += 1;
+          return {
+          session: 25,
+          weekly: 25,
+          sessionLabel: "Budget",
+          weeklyLabel: "Today",
+          sessionResetsIn: "2d",
+          weeklyResetsIn: "12h",
+          sessionQuota: { used: 1250, limit: 5000, unit: "USD", label: "Budget" },
+          weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
+          };
+        },
+      },
+    });
+    const mock = createContext("tui", "anthropic", {
+      baseUrl: "http://127.0.0.1:19516/wire/secret/pi/anthropic",
+    });
+
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    expect(mock.authCalls()).toBe(0);
+    expect(harness.emitted).toContainEqual({
+      name: "@jetserge/pi-usage-bars:update",
+      data: expect.objectContaining({ provider: "central", session: 25, weekly: 25 }),
+    });
+    expect(mock.statuses.at(-1)).toContain("Central B ██░░░░░░ 25% $1.25K / $5K ⟳ 2d");
+    expect(mock.statuses.at(-1)).toContain("D ██░░░░░░ 25% $12.5 / $50 ⟳ 12h");
+    await harness.commands.get("central-quota")?.handler("", mock.context);
+    expect(fetchCalls).toBe(2);
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("shows and updates the Central daily limit command", async () => {
+    const updated: number[] = [];
+    const harness = createHarness({
+      dependencies: {
+        centralConfigPath: "C:/tmp/usage-bars.json",
+        getCentralDailyLimit: () => 50,
+        setCentralDailyLimit: limit => { updated.push(limit); },
+      },
+    });
+    const mock = createContext("tui");
+
+    await harness.commands.get("central-daily-limit")?.handler("", mock.context);
+    await harness.commands.get("central-daily-limit")?.handler("$75", mock.context);
+    await harness.commands.get("central-daily-limit")?.handler("0", mock.context);
+
+    expect(updated).toEqual([75]);
+    expect(mock.notifications).toContain("Central daily limit: $50.00\nC:/tmp/usage-bars.json");
+    expect(mock.notifications).toContain("Central daily limit set to $75.00");
+    expect(mock.notifications).toContain("Usage: /central-daily-limit <amount greater than zero>");
   });
 
   it("resolves kimi-coding tokens exposed only via the Authorization header", async () => {
@@ -204,7 +270,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "kimi", session: 25, weekly: 25 }),
     });
     expect(mock.statuses.at(-1)).toContain("Kimi");
@@ -236,7 +302,7 @@ describe("usage-bars extension lifecycle", () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
 
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "codex", weekly: 72, sessionHidden: true }),
     });
     expect(mock.statuses.at(-1)).toContain("Codex W ");
@@ -266,7 +332,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({
         provider: "openrouter",
         accountBalance: { amount: 20, unit: "USD", label: "Balance" },
@@ -343,7 +409,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(firstRequestAborted).toBeTrue();
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "codex", session: 21, weekly: 43 }),
     });
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, replacement.context);
@@ -415,7 +481,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(codexRequestAborted).toBeTrue();
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "openrouter" }),
     });
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
@@ -491,7 +557,7 @@ describe("usage-bars extension lifecycle", () => {
 
     expect(mock.authCalls()).toBe(1);
     expect(harness.emitted).toContainEqual({
-      name: "@hk_net/pi-usage-bars:update",
+      name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({
         provider: "baseten",
         quotaHidden: true,

@@ -1,6 +1,6 @@
 {
-  "name": "@hk_net/pi-usage-bars",
-  "version": "0.6.0",
+  "name": "@jetserge/pi-usage-bars",
+  "version": "0.7.0",
   "description": "Quota, balance, and spend indicators for current Pi providers",
   "keywords": [
     "pi-package",
@@ -9,6 +9,7 @@
     "usage",
     "codex",
     "anthropic",
+    "jetbrains-central",
     "zai",
     "kimi",
     "minimax",
@@ -20,15 +21,14 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/hknet/pi-usage-bars.git"
+    "url": "git+https://github.com/CrazyCoder/pi-usage-bars.git"
   },
-  "homepage": "https://github.com/hknet/pi-usage-bars#readme",
+  "homepage": "https://github.com/CrazyCoder/pi-usage-bars#readme",
   "bugs": {
-    "url": "https://github.com/hknet/pi-usage-bars/issues"
+    "url": "https://github.com/CrazyCoder/pi-usage-bars/issues"
   },
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "type": "module",
   "files": [
@@ -42,6 +42,7 @@
     "test": "bun test tests",
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
+    "verify:tarball": "node scripts/verify-tarball.mjs",
     "prepublishOnly": "npm run check"
   },
   "engines": {
@@ -70,6 +71,6 @@
     "extensions": [
       "./extensions/usage-bars/index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/hknet/pi-usage-bars/main/assets/usage-command.png"
+    "image": "https://raw.githubusercontent.com/CrazyCoder/pi-usage-bars/main/assets/usage-command.png"
   }
 }

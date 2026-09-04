@@ -36,6 +36,14 @@ import {
   type FetchResponseLike,
   type UsageEndpoints,
 } from "../extensions/usage-bars/core";
+import {
+  buildCentralUsage,
+  fetchCentralUsage,
+  getCentralDailyLimit,
+  parseCentralLimit,
+  setCentralDailyLimit,
+  updateCentralDailyState,
+} from "../extensions/usage-bars/central";
 
 function responseHeaders(values: Record<string, string> = {}) {
   const normalized = new Map(Object.entries(values).map(([key, value]) => [key.toLowerCase(), value]));
@@ -131,10 +139,89 @@ describe("formatting and parsing", () => {
   });
 });
 
+describe("JetBrains Central usage", () => {
+  const now = new Date(2026, 8, 4, 12).getTime();
+
+  it("builds budget and daily-spend quota lanes", () => {
+    const limit = parseCentralLimit({
+      usedDollars: "1250.50",
+      maxDollars: "5000.00",
+      refillNext: now + 2 * 24 * 60 * 60 * 1000,
+    });
+    const usage = buildCentralUsage(limit, 12.5, 50, now);
+    expect(usage.session).toBeCloseTo(25.01);
+    expect(usage.weekly).toBe(25);
+    expect(usage).toMatchObject({
+      sessionLabel: "Budget",
+      weeklyLabel: "Today",
+      sessionResetsIn: "2d",
+      sessionQuota: { used: 1250.5, limit: 5000, unit: "USD", label: "Budget" },
+      weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
+      fetchedAt: now,
+    });
+  });
+
+  it("tracks positive daily deltas and resets the day without losing the first delta", () => {
+    const firstTime = new Date(2026, 8, 4, 23, 50).getTime();
+    const first = updateCentralDailyState(undefined, 10, firstTime);
+    const sameDay = updateCentralDailyState(first, 12.5, firstTime + 5 * 60_000);
+    const nextDay = updateCentralDailyState(sameDay, 13.5, firstTime + 20 * 60_000);
+    const afterRefill = updateCentralDailyState(nextDay, 1, firstTime + 25 * 60_000);
+    expect(first.spent).toBe(0);
+    expect(sameDay.spent).toBe(2.5);
+    expect(nextDay.spent).toBe(1);
+    expect(afterRefill).toMatchObject({ spent: 1, lastUsed: 1 });
+  });
+
+  it("persists the configurable daily limit without dropping other settings", () => {
+    const configPath = tempFile("usage-bars.json");
+    fs.writeFileSync(configPath, JSON.stringify({ retained: true }));
+    setCentralDailyLimit(75, configPath);
+    expect(getCentralDailyLimit(configPath)).toBe(75);
+    expect(JSON.parse(fs.readFileSync(configPath, "utf8"))).toEqual({ retained: true, centralDailyLimitUsd: 75 });
+  });
+
+  it("tracks live command results and reports failures", async () => {
+    const statePath = tempFile("central-state.json");
+    const configPath = tempFile("usage-bars-default.json");
+    const first = await fetchCentralUsage({
+      statePath,
+      configPath,
+      nowMs: now,
+      runLimit: async () => ({ usedDollars: "10", maxDollars: "100" }),
+    });
+    const second = await fetchCentralUsage({
+      statePath,
+      configPath,
+      nowMs: now + 60_000,
+      runLimit: async () => ({ usedDollars: "12.50", maxDollars: "100" }),
+    });
+    expect(first.weekly).toBe(0);
+    expect(second).toMatchObject({
+      weekly: 5,
+      weeklyQuota: { used: 2.5, limit: 50, unit: "USD", label: "Today" },
+    });
+    expect(await fetchCentralUsage({ runLimit: async () => { throw new Error("central unavailable"); } }))
+      .toMatchObject({ error: "central unavailable" });
+    expect(await fetchCentralUsage({ runLimit: async () => ({ managed: true }) }))
+      .toMatchObject({ error: "Central Server manages limits and exposes no usage totals" });
+  });
+});
+
 describe("current Pi provider compatibility", () => {
   it("detects supported current providers", () => {
     expect(detectProvider({ provider: "openai-codex" })).toBe("codex");
     expect(detectProvider({ provider: "anthropic" })).toBe("claude");
+    expect(detectProvider({
+      provider: "anthropic",
+      baseUrl: "http://127.0.0.1:19516/wire/secret/pi/anthropic",
+    })).toBe("central");
+    expect(detectProvider({ provider: "openai", apiKey: "wire-proxy" })).toBe("central");
+    expect(detectProvider({
+      provider: "openai-codex",
+      baseUrl: "http://localhost:23456/wire/secret/pi/openai/v1",
+    })).toBe("central");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.anthropic.com" })).toBe("claude");
     expect(detectProvider({ provider: "zai" })).toBe("zai");
     expect(detectProvider({ provider: "zai-coding-cn" })).toBe("zai-cn");
     expect(detectProvider({ provider: "kimi-coding" })).toBe("kimi");

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export type ProviderKey =
+  | "central"
   | "codex"
   | "claude"
   | "zai"
@@ -15,6 +16,7 @@ export type ProviderKey =
   | "moonshot"
   | "moonshot-cn"
   | "baseten";
+export type AuthenticatedProviderKey = Exclude<ProviderKey, "central">;
 export type PiProviderId =
   | "openai-codex"
   | "anthropic"
@@ -43,6 +45,13 @@ export interface AccountSpend {
   lifetime?: number;
 }
 
+export interface AccountQuota {
+  used: number;
+  limit: number;
+  unit: string;
+  label: string;
+}
+
 export interface UsageData {
   session: number;
   weekly: number;
@@ -51,6 +60,8 @@ export interface UsageData {
   accountBalanceDetails?: AccountBalance[];
   accountUsage?: AccountBalance;
   accountSpend?: AccountSpend;
+  sessionQuota?: AccountQuota;
+  weeklyQuota?: AccountQuota;
   sessionResetsIn?: string;
   weeklyResetsIn?: string;
   sessionResetsAt?: string;
@@ -69,7 +80,7 @@ export interface UsageData {
 }
 
 export type UsageByProvider = Record<ProviderKey, UsageData | null>;
-export type UsageTokens = Partial<Record<ProviderKey, string>>;
+export type UsageTokens = Partial<Record<AuthenticatedProviderKey, string>>;
 
 export interface UsageEndpoints {
   zai: string;
@@ -1224,10 +1235,30 @@ export async function fetchZaiUsage(
   return extractUsageFromPayload(result.data) ?? { session: 0, weekly: 0, error: "unrecognized response shape" };
 }
 
+export interface UsageModelRoute {
+  provider?: string;
+  baseUrl?: string;
+  apiKey?: string;
+}
+
+export function isCentralModel(model: UsageModelRoute | string | undefined | null): boolean {
+  if (!model || typeof model === "string") return false;
+  if (model.apiKey === "wire-proxy") return true;
+  if (typeof model.baseUrl !== "string" || !model.baseUrl.trim()) return false;
+  try {
+    const url = new URL(model.baseUrl);
+    const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+    return local && (/^\/wire\//.test(url.pathname) && /\/pi(?:\/|$)/.test(url.pathname));
+  } catch {
+    return false;
+  }
+}
+
 export function detectProvider(
-  model: { provider?: string } | string | undefined | null,
+  model: UsageModelRoute | string | undefined | null,
 ): ProviderKey | null {
   if (!model || typeof model === "string") return null;
+  if (isCentralModel(model)) return "central";
   switch ((model.provider || "").toLowerCase()) {
     case "openai-codex": return "codex";
     case "anthropic": return "claude";
@@ -1245,7 +1276,7 @@ export function detectProvider(
   }
 }
 
-export function providerToPiProviderId(provider: ProviderKey): PiProviderId {
+export function providerToPiProviderId(provider: AuthenticatedProviderKey): PiProviderId {
   switch (provider) {
     case "codex": return "openai-codex";
     case "claude": return "anthropic";
@@ -1279,6 +1310,7 @@ export async function fetchAllUsages(
 ): Promise<UsageByProvider> {
   const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
   const results: UsageByProvider = {
+    central: null,
     codex: null,
     claude: null,
     zai: null,
@@ -1294,7 +1326,7 @@ export async function fetchAllUsages(
   };
   const tasks: Promise<void>[] = [];
 
-  const assign = (provider: ProviderKey, request: Promise<UsageData>) => {
+  const assign = (provider: AuthenticatedProviderKey, request: Promise<UsageData>) => {
     tasks.push(request.then((usage) => {
       results[provider] = usage;
     }).catch((error) => {

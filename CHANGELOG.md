@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.7.0] - 2026-09-04
+
+First `@jetserge/pi-usage-bars` release, forked from [hknet/pi-usage-bars](https://github.com/hknet/pi-usage-bars) 0.6.0.
+
+### Added
+
+- Detect any active model routed through the JetBrains Central Wire proxy and show Central quota instead of the underlying provider's direct subscription quota.
+- Render the Central budget and today's locally tracked spend as two quota bars, including dollar amounts and reset countdowns.
+- Track today's spend from positive deltas in `central limit --json`, following the same local-snapshot model as JBCentralGUI.
+- Add `/central-daily-limit` and `~/.pi/agent/usage-bars.json` configuration for the daily spending limit. The default is $50.
+- Verify the real npm tarball before publishing.
+
+### Changed
+
+- Publish tagged releases through npm trusted publishing with GitHub provenance. The initial version remains a one-time manual publish.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added
