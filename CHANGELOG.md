@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.2] - 2026-09-17
+
 ### Added
 
 - Show Central quota for a model whose base URL is a JetBrains AI Platform LLM

@@ -30,11 +30,11 @@ It adds:
 
 JetBrains Central takes precedence when the active model points at Central's
 local Wire proxy, or directly at the JetBrains AI Platform LLM routes that a
-Central session pays for. The footer shows the monthly Central credit limit as `M` and
-today's locally tracked spend against a configurable daily limit as `D`. Both
-bars include dollar amounts and reset countdowns. This applies to Anthropic,
-OpenAI, OpenAI Codex, and any future provider routed through the same proxy
-marker.
+Central session pays for. The footer shows the monthly Central credit limit as
+`M` and today's locally tracked spend against a configurable daily limit as `D`.
+Both bars include dollar amounts and reset countdowns. This applies to
+Anthropic, OpenAI, OpenAI Codex, and any future provider routed through the same
+proxy marker.
 
 DeepSeek shows total, topped-up, and granted balances in the currency returned
 by the API. Moonshot shows available, cash, and voucher balances; this is
