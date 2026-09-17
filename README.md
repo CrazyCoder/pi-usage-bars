@@ -29,7 +29,8 @@ It adds:
 | Baseten                      | `baseten`                      | Baseten API key                   |
 
 JetBrains Central takes precedence when the active model points at Central's
-local Wire proxy. The footer shows the monthly Central credit limit as `M` and
+local Wire proxy, or directly at the JetBrains AI Platform LLM routes that a
+Central session pays for. The footer shows the monthly Central credit limit as `M` and
 today's locally tracked spend against a configurable daily limit as `D`. Both
 bars include dollar amounts and reset countdowns. This applies to Anthropic,
 OpenAI, OpenAI Codex, and any future provider routed through the same proxy

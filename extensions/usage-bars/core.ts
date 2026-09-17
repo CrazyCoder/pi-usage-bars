@@ -1241,12 +1241,24 @@ export interface UsageModelRoute {
   apiKey?: string;
 }
 
+const JETBRAINS_AI_PLATFORM_HOSTS = new Set(["api.jetbrains.ai", "api.stgn.jetbrains.ai"]);
+
+// A model that calls the JetBrains AI Platform LLM routes directly, with the
+// session Central holds, spends the same Central quota as one routed through
+// the Wire proxy.
+function isPlatformLlmUrl(url: URL): boolean {
+  return url.protocol === "https:"
+    && JETBRAINS_AI_PLATFORM_HOSTS.has(url.hostname)
+    && /^\/(?:user\/v5\/)?llm\//.test(url.pathname);
+}
+
 export function isCentralModel(model: UsageModelRoute | string | undefined | null): boolean {
   if (!model || typeof model === "string") return false;
   if (model.apiKey === "wire-proxy") return true;
   if (typeof model.baseUrl !== "string" || !model.baseUrl.trim()) return false;
   try {
     const url = new URL(model.baseUrl);
+    if (isPlatformLlmUrl(url)) return true;
     const local = url.hostname === "127.0.0.1" || url.hostname === "localhost";
     return local && (/^\/wire\//.test(url.pathname) && /\/pi(?:\/|$)/.test(url.pathname));
   } catch {

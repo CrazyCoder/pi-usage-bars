@@ -240,6 +240,14 @@ describe("JetBrains Central usage", () => {
 });
 
 describe("current Pi provider compatibility", () => {
+  it("detects a model that calls the JetBrains AI Platform directly as Central", () => {
+    expect(detectProvider({ provider: "xai", baseUrl: "https://api.jetbrains.ai/llm/xai/v1" })).toBe("central");
+    expect(detectProvider({ provider: "xai", baseUrl: "https://api.stgn.jetbrains.ai/user/v5/llm/xai/v1" })).toBe("central");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai/other/llm/anthropic" })).toBe("claude");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "http://api.jetbrains.ai/llm/anthropic" })).toBe("claude");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai.example.com/llm/anthropic" })).toBe("claude");
+  });
+
   it("detects supported current providers", () => {
     expect(detectProvider({ provider: "openai-codex" })).toBe("codex");
     expect(detectProvider({ provider: "anthropic" })).toBe("claude");

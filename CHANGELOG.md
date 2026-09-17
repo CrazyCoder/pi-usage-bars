@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- Show Central quota for a model whose base URL is a JetBrains AI Platform LLM
+  route (`api.jetbrains.ai` or the staging host, under `/llm/` or
+  `/user/v5/llm/`). Such a model spends the Central quota without passing
+  through the Wire proxy, as JetDesk's direct xAI route does.
+
 ## [0.7.1] - 2026-09-04
 
 ### Changed
