@@ -12,21 +12,24 @@ It adds:
 
 ## Supported providers
 
-| Provider                     | Pi provider ID                 | Authentication                    |
-| ---------------------------- | ------------------------------ | --------------------------------- |
-| JetBrains Central            | Any provider routed by Central | JetBrains Central CLI             |
-| OpenAI Codex                 | `openai-codex`                 | ChatGPT subscription OAuth        |
-| Anthropic Claude             | `anthropic`                    | Claude Pro/Max OAuth              |
-| ZAI Coding Plan (Global)     | `zai`                          | ZAI API key                       |
-| ZAI Coding Plan (China)      | `zai-coding-cn`                | ZAI China API key                 |
-| Kimi For Coding              | `kimi-coding`                  | Kimi Coding Plan OAuth or API key |
-| MiniMax Coding Plan (Global) | `minimax`                      | MiniMax Global API key            |
-| MiniMax Coding Plan (China)  | `minimax-cn`                   | MiniMax China API key             |
-| OpenRouter                   | `openrouter`                   | OpenRouter API key                |
-| DeepSeek                     | `deepseek`                     | DeepSeek API key                  |
-| Moonshot/Kimi API (Global)   | `moonshotai`                   | Moonshot Global API key           |
-| Moonshot/Kimi API (China)    | `moonshotai-cn`                | Moonshot China API key            |
-| Baseten                      | `baseten`                      | Baseten API key                   |
+| Provider | Pi provider ID | Authentication |
+| -- | -- | -- |
+| JetBrains Central | Any provider routed by Central | JetBrains Central CLI |
+| OpenAI Codex | `openai-codex` | ChatGPT subscription OAuth |
+| Anthropic Claude | `anthropic` | Claude Pro/Max OAuth |
+| ZAI Coding Plan (Global) | `zai` | ZAI API key |
+| ZAI Coding Plan (China) | `zai-coding-cn` | ZAI China API key |
+| Kimi For Coding | `kimi-coding` | Kimi Coding Plan OAuth or API key |
+| MiniMax Coding Plan (Global) | `minimax` | MiniMax Global API key |
+| MiniMax Coding Plan (China) | `minimax-cn` | MiniMax China API key |
+| OpenRouter | `openrouter` | OpenRouter API key |
+| DeepSeek | `deepseek` | DeepSeek API key |
+| Moonshot/Kimi API (Global) | `moonshotai` | Moonshot Global API key |
+| Moonshot/Kimi API (China) | `moonshotai-cn` | Moonshot China API key |
+| Baseten | `baseten` | Baseten API key |
+| Vercel AI Gateway | `vercel-ai-gateway` | AI Gateway API key |
+| Fireworks AI | `fireworks` | Fireworks API key |
+| xAI | `xai` | Separate read-only xAI Management Key |
 
 JetBrains Central takes precedence when the active model points at Central's
 local Wire proxy, or directly at the JetBrains AI Platform LLM routes that a
@@ -49,6 +52,12 @@ also rendered as a usage bar. Baseten shows current calendar-month credits used,
 aggregated across its documented dedicated, training, and Model APIs billing
 categories; it does not invent a remaining-balance or quota percentage.
 
+Vercel AI Gateway shows the team's remaining AI Gateway Credits balance and
+lifetime spend. Fireworks shows account-wide rated spend for the current UTC
+calendar month. Its high default monthly-spend quota is not treated as a useful
+budget percentage. xAI shows the team's prepaid balance and current
+billing-cycle spend.
+
 MiniMax Subscription Keys can represent an active Token Plan, purchased Credits,
 or both. The extension shows quota windows when present and a neutral
 credit-balance line if a first-party key-authenticated response exposes
@@ -63,7 +72,7 @@ those built-in providers in version 0.71.0.
 
 ## Requirements
 
-- Pi 0.84.2 or newer (tested with the current Pi 0.84.4 release)
+- Pi 0.84.2 or newer (tested with the current Pi 0.87.1 release)
 - Node.js 22.19 or newer when using the npm-distributed Pi CLI
 - JetBrains Central CLI on `PATH` to show Central usage for a routed model
 
@@ -71,6 +80,19 @@ Authenticate direct providers through Pi's `/login` command. The extension
 resolves those credentials through Pi's provider API and does not read or write
 `auth.json`. For a Central-routed model, it runs `central limit --json` and does
 not use the direct provider credential.
+
+xAI keeps inference and billing credentials separate. After authenticating Pi's
+normal `xai` provider, configure usage reporting with a read-only, team-scoped
+Management Key:
+
+```text
+/login pi-usage-bars-xai-management
+```
+
+Select **xAI Management (pi-usage-bars)** and paste the key into Pi's secret
+prompt. For headless or CI use, `XAI_MANAGEMENT_KEY` is also accepted from the
+environment. Organization-scoped Management Keys are not selected or aggregated
+automatically.
 
 ## Install
 
@@ -169,24 +191,32 @@ No credential is included in the output.
 
 First-party monitoring endpoints can be overridden:
 
-| Variable                              | Default                                                            |
-| ------------------------------------- | ------------------------------------------------------------------ |
-| `PI_ZAI_USAGE_ENDPOINT`               | `https://api.z.ai/api/monitor/usage/quota/limit`                   |
-| `PI_ZAI_CODING_CN_USAGE_ENDPOINT`     | `https://open.bigmodel.cn/api/monitor/usage/quota/limit`           |
-| `PI_KIMI_USAGE_ENDPOINT`              | `https://api.kimi.com/coding/v1/usages`                            |
-| `PI_MINIMAX_USAGE_ENDPOINT`           | `https://api.minimax.io/v1/token_plan/remains`                     |
-| `PI_MINIMAX_LEGACY_USAGE_ENDPOINT`    | `https://api.minimax.io/v1/api/openplatform/coding_plan/remains`   |
-| `PI_MINIMAX_CN_USAGE_ENDPOINT`        | `https://api.minimaxi.com/v1/token_plan/remains`                   |
+| Variable | Default |
+| -- | -- |
+| `PI_ZAI_USAGE_ENDPOINT` | `https://api.z.ai/api/monitor/usage/quota/limit` |
+| `PI_ZAI_CODING_CN_USAGE_ENDPOINT` | `https://open.bigmodel.cn/api/monitor/usage/quota/limit` |
+| `PI_KIMI_USAGE_ENDPOINT` | `https://api.kimi.com/coding/v1/usages` |
+| `PI_MINIMAX_USAGE_ENDPOINT` | `https://api.minimax.io/v1/token_plan/remains` |
+| `PI_MINIMAX_LEGACY_USAGE_ENDPOINT` | `https://api.minimax.io/v1/api/openplatform/coding_plan/remains` |
+| `PI_MINIMAX_CN_USAGE_ENDPOINT` | `https://api.minimaxi.com/v1/token_plan/remains` |
 | `PI_MINIMAX_CN_LEGACY_USAGE_ENDPOINT` | `https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains` |
-| `PI_OPENROUTER_CREDITS_ENDPOINT`      | `https://openrouter.ai/api/v1/credits`                             |
-| `PI_OPENROUTER_KEY_ENDPOINT`          | `https://openrouter.ai/api/v1/key`                                 |
-| `PI_DEEPSEEK_BALANCE_ENDPOINT`        | `https://api.deepseek.com/user/balance`                            |
-| `PI_MOONSHOT_BALANCE_ENDPOINT`        | `https://api.moonshot.ai/v1/users/me/balance`                      |
-| `PI_MOONSHOT_CN_BALANCE_ENDPOINT`     | `https://api.moonshot.cn/v1/users/me/balance`                      |
-| `PI_BASETEN_USAGE_ENDPOINT`           | `https://api.baseten.co/v1/billing/usage_summary`                  |
+| `PI_OPENROUTER_CREDITS_ENDPOINT` | `https://openrouter.ai/api/v1/credits` |
+| `PI_OPENROUTER_KEY_ENDPOINT` | `https://openrouter.ai/api/v1/key` |
+| `PI_DEEPSEEK_BALANCE_ENDPOINT` | `https://api.deepseek.com/user/balance` |
+| `PI_MOONSHOT_BALANCE_ENDPOINT` | `https://api.moonshot.ai/v1/users/me/balance` |
+| `PI_MOONSHOT_CN_BALANCE_ENDPOINT` | `https://api.moonshot.cn/v1/users/me/balance` |
+| `PI_BASETEN_USAGE_ENDPOINT` | `https://api.baseten.co/v1/billing/usage_summary` |
+| `PI_VERCEL_AI_GATEWAY_CREDITS_ENDPOINT` | `https://ai-gateway.vercel.sh/v1/credits` |
+| `PI_FIREWORKS_API_ENDPOINT` | `https://api.fireworks.ai/v1` |
+| `PI_FIREWORKS_ACCOUNT_ID` | Automatically discovered when exactly one account is accessible |
+| `PI_XAI_MANAGEMENT_API_ENDPOINT` | `https://management-api.x.ai` |
 
 **Security:** the corresponding provider token is sent as a bearer token to the
-configured endpoint. Only override these variables with an endpoint you trust.
+configured endpoint. Only override endpoint variables with an endpoint you
+trust. `PI_FIREWORKS_ACCOUNT_ID` selects an account already returned by
+Fireworks account discovery; it may be either the account slug or its
+`accounts/<slug>` resource name. When a key can access multiple accounts, this
+variable is required rather than guessing or aggregating across accounts.
 
 The Codex and Claude usage endpoints are fixed to their first-party services.
 Claude responses are cached briefly in the system temporary directory to
@@ -197,9 +227,9 @@ executable.
 ## Financial metrics roadmap
 
 Quota percentages and monetary account data have different meaning and color
-semantics. OpenRouter, DeepSeek, Moonshot, and MiniMax financial data are
-rendered as neutral account values; percentages are used only when an actual
-limit exists.
+semantics. OpenRouter, DeepSeek, Moonshot, MiniMax, Vercel AI Gateway,
+Fireworks, and xAI financial data are rendered as neutral account values;
+percentages are used only when an actual limit exists.
 
 ### Future: Qwen Token Plan
 

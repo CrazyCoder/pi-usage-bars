@@ -15,7 +15,10 @@ export type ProviderKey =
   | "deepseek"
   | "moonshot"
   | "moonshot-cn"
-  | "baseten";
+  | "baseten"
+  | "vercel"
+  | "fireworks"
+  | "xai";
 export type AuthenticatedProviderKey = Exclude<ProviderKey, "central">;
 export type PiProviderId =
   | "openai-codex"
@@ -29,7 +32,10 @@ export type PiProviderId =
   | "deepseek"
   | "moonshotai"
   | "moonshotai-cn"
-  | "baseten";
+  | "baseten"
+  | "vercel-ai-gateway"
+  | "fireworks"
+  | "pi-usage-bars-xai-management";
 
 export interface AccountBalance {
   amount: number;
@@ -96,6 +102,10 @@ export interface UsageEndpoints {
   moonshotBalance: string;
   moonshotCnBalance: string;
   basetenUsage: string;
+  vercelCredits: string;
+  fireworksApi: string;
+  fireworksAccountId?: string;
+  xaiManagementApi: string;
 }
 
 export interface HeadersLike {
@@ -133,6 +143,10 @@ export interface ClaudeUsageFetchConfig extends RequestConfig {
 }
 
 export interface BasetenUsageFetchConfig extends FetchConfig {
+  nowMs?: number;
+}
+
+export interface FireworksUsageFetchConfig extends FetchConfig {
   nowMs?: number;
 }
 
@@ -193,6 +207,10 @@ export const DEFAULT_DEEPSEEK_BALANCE_ENDPOINT = "https://api.deepseek.com/user/
 export const DEFAULT_MOONSHOT_BALANCE_ENDPOINT = "https://api.moonshot.ai/v1/users/me/balance";
 export const DEFAULT_MOONSHOT_CN_BALANCE_ENDPOINT = "https://api.moonshot.cn/v1/users/me/balance";
 export const DEFAULT_BASETEN_USAGE_ENDPOINT = "https://api.baseten.co/v1/billing/usage_summary";
+export const DEFAULT_VERCEL_CREDITS_ENDPOINT = "https://ai-gateway.vercel.sh/v1/credits";
+export const DEFAULT_FIREWORKS_API_ENDPOINT = "https://api.fireworks.ai/v1";
+export const DEFAULT_XAI_MANAGEMENT_API_ENDPOINT = "https://management-api.x.ai";
+export const XAI_MANAGEMENT_PROVIDER_ID = "pi-usage-bars-xai-management";
 
 export function resolveUsageEndpoints(env: NodeJS.ProcessEnv = process.env): UsageEndpoints {
   const configured = (value: string | undefined, fallback: string) => {
@@ -214,6 +232,10 @@ export function resolveUsageEndpoints(env: NodeJS.ProcessEnv = process.env): Usa
     moonshotBalance: configured(env.PI_MOONSHOT_BALANCE_ENDPOINT, DEFAULT_MOONSHOT_BALANCE_ENDPOINT),
     moonshotCnBalance: configured(env.PI_MOONSHOT_CN_BALANCE_ENDPOINT, DEFAULT_MOONSHOT_CN_BALANCE_ENDPOINT),
     basetenUsage: configured(env.PI_BASETEN_USAGE_ENDPOINT, DEFAULT_BASETEN_USAGE_ENDPOINT),
+    vercelCredits: configured(env.PI_VERCEL_AI_GATEWAY_CREDITS_ENDPOINT, DEFAULT_VERCEL_CREDITS_ENDPOINT),
+    fireworksApi: configured(env.PI_FIREWORKS_API_ENDPOINT, DEFAULT_FIREWORKS_API_ENDPOINT),
+    fireworksAccountId: env.PI_FIREWORKS_ACCOUNT_ID?.trim() || undefined,
+    xaiManagementApi: configured(env.PI_XAI_MANAGEMENT_API_ENDPOINT, DEFAULT_XAI_MANAGEMENT_API_ENDPOINT),
   };
 }
 
@@ -1142,6 +1164,258 @@ export async function fetchBasetenUsage(token: string, config: BasetenUsageFetch
   };
 }
 
+interface FireworksMoney {
+  currencyCode: string;
+  amount: number;
+}
+
+function parseFireworksMoney(value: unknown): FireworksMoney | null {
+  const raw = asObject(value);
+  if (!raw || typeof raw.currencyCode !== "string" || !raw.currencyCode.trim()) return null;
+  const parsedUnits = readNumber(raw.units);
+  const parsedNanos = readNumber(raw.nanos);
+  if ((raw.units !== undefined && parsedUnits === null) || (raw.nanos !== undefined && parsedNanos === null)) {
+    return null;
+  }
+  const units = parsedUnits ?? 0;
+  const nanos = parsedNanos ?? 0;
+  if (!Number.isInteger(nanos) || Math.abs(nanos) >= 1_000_000_000) return null;
+  return {
+    currencyCode: raw.currencyCode.trim().toUpperCase(),
+    amount: units + nanos / 1_000_000_000,
+  };
+}
+
+export function extractFireworksSpendFromPayload(payload: unknown): UsageData | null {
+  const root = asObject(payload);
+  if (!root || !Array.isArray(root.lineItems)) return null;
+  const amounts: FireworksMoney[] = [];
+  for (const value of root.lineItems) {
+    const item = asObject(value);
+    const parsed = parseFireworksMoney(item?.totalCost);
+    if (!parsed) return null;
+    amounts.push(parsed);
+  }
+  const currencies = new Set(amounts.map((amount) => amount.currencyCode));
+  if (currencies.size > 1) return null;
+  const unit = amounts[0]?.currencyCode ?? "USD";
+  const monthly = amounts.reduce((sum, amount) => sum + amount.amount, 0);
+  return {
+    session: 0,
+    weekly: 0,
+    quotaHidden: true,
+    accountSpend: { unit, monthly: Number(monthly.toFixed(6)) },
+  };
+}
+
+function fireworksMonthRange(nowMs: number): { startTime: string; endTime: string } {
+  const now = new Date(nowMs);
+  return {
+    startTime: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString(),
+    // Fireworks treats the end date as exclusive and aggregates by UTC date.
+    endTime: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1)).toISOString(),
+  };
+}
+
+function normalizeFireworksAccountId(value: string): string | null {
+  const normalized = value.trim().replace(/^accounts\//, "");
+  return /^[A-Za-z0-9._-]+$/.test(normalized) ? normalized : null;
+}
+
+async function requestFireworksJson(
+  url: string,
+  init: RequestInit,
+  config: RequestConfig,
+): Promise<JsonRequestResult> {
+  const first = await requestJson(url, init, config);
+  if (first.ok || ![429, 502, 503, 504].includes(first.status ?? 0)) return first;
+
+  const retryAfterMs = parseRetryAfterMs(getHeader(first.headers, "retry-after"));
+  try {
+    await sleep(Math.min(retryAfterMs ?? 250, 2_000), config.signal);
+  } catch {
+    return { ok: false, error: "request cancelled", status: null };
+  }
+  return requestJson(url, init, config);
+}
+
+export async function fetchFireworksUsage(
+  token: string,
+  config: FireworksUsageFetchConfig = {},
+): Promise<UsageData> {
+  const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+  const apiBase = endpoints.fireworksApi.replace(/\/+$/, "");
+  const accountsResult = await requestFireworksJson(`${apiBase}/accounts?pageSize=200`, { headers }, config);
+  if (!accountsResult.ok) {
+    return { session: 0, weekly: 0, error: `account discovery: ${accountsResult.error}` };
+  }
+
+  const root = asObject(accountsResult.data);
+  const accounts = Array.isArray(root?.accounts) ? root.accounts.map(asObject).filter(Boolean) : [];
+  const accountIds = accounts.flatMap((account) => {
+    const name = typeof account?.name === "string" ? account.name : "";
+    const id = normalizeFireworksAccountId(name);
+    return id ? [id] : [];
+  });
+  const totalSize = readNumber(root?.totalSize);
+  const configuredId = endpoints.fireworksAccountId
+    ? normalizeFireworksAccountId(endpoints.fireworksAccountId)
+    : null;
+  if (endpoints.fireworksAccountId && !configuredId) {
+    return { session: 0, weekly: 0, error: "invalid PI_FIREWORKS_ACCOUNT_ID" };
+  }
+
+  let accountId: string | undefined;
+  if (configuredId) {
+    if (!accountIds.includes(configuredId)) {
+      return { session: 0, weekly: 0, error: "PI_FIREWORKS_ACCOUNT_ID is not accessible with this key" };
+    }
+    accountId = configuredId;
+  } else if (accountIds.length === 1 && (totalSize === null || totalSize <= 1)) {
+    // Fireworks may return totalSize: 0 alongside one account, so trust the
+    // usable resource list unless totalSize explicitly reports more accounts.
+    accountId = accountIds[0];
+  } else if (accountIds.length === 0) {
+    return { session: 0, weekly: 0, error: "no accessible Fireworks account" };
+  } else {
+    return {
+      session: 0,
+      weekly: 0,
+      error: "multiple Fireworks accounts; set PI_FIREWORKS_ACCOUNT_ID",
+    };
+  }
+
+  const { startTime, endTime } = fireworksMonthRange(config.nowMs ?? Date.now());
+  const query = new URLSearchParams({ startTime, endTime });
+  const result = await requestFireworksJson(
+    `${apiBase}/accounts/${encodeURIComponent(accountId)}/billing/summary?${query}`,
+    { headers },
+    config,
+  );
+  if (!result.ok) return { session: 0, weekly: 0, error: `billing summary: ${result.error}` };
+  return extractFireworksSpendFromPayload(result.data) ?? {
+    session: 0,
+    weekly: 0,
+    error: "unrecognized billing summary response shape",
+  };
+}
+
+function readXaiUsdCents(value: unknown): number | null {
+  const raw = asObject(value);
+  const cents = readNumber(raw?.val ?? value);
+  return cents === null ? null : Number((cents / 100).toFixed(6));
+}
+
+export function extractXaiBillingFromPayloads(
+  prepaidPayload: unknown,
+  invoicePreviewPayload: unknown,
+): UsageData | null {
+  const prepaid = asObject(prepaidPayload);
+  const preview = asObject(invoicePreviewPayload);
+  const accountingBalance = readXaiUsdCents(prepaid?.total);
+  const currentCycleTotal = readXaiUsdCents(asObject(preview?.coreInvoice)?.totalWithCorr);
+  if (accountingBalance === null && currentCycleTotal === null) return null;
+
+  return {
+    session: 0,
+    weekly: 0,
+    quotaHidden: true,
+    // xAI represents purchases as negative and spend as positive in its
+    // prepaid accounting ledger, so the available balance is the negated total.
+    accountBalance: accountingBalance === null
+      ? undefined
+      : { amount: -accountingBalance, unit: "USD", label: "Prepaid balance" },
+    accountSpend: currentCycleTotal === null
+      ? undefined
+      : { unit: "USD", monthly: currentCycleTotal },
+  };
+}
+
+export async function fetchXaiUsage(token: string, config: FetchConfig = {}): Promise<UsageData> {
+  const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
+  const apiBase = endpoints.xaiManagementApi.replace(/\/+$/, "");
+  const headers = { Authorization: `Bearer ${token}`, Accept: "application/json" };
+  const validation = await requestJson(`${apiBase}/auth/management-keys/validation`, { headers }, config);
+  if (!validation.ok) return { session: 0, weekly: 0, error: `key validation: ${validation.error}` };
+
+  const validationBody = asObject(validation.data);
+  const scope = typeof validationBody?.scope === "string" ? validationBody.scope : "";
+  if (scope !== "SCOPE_TEAM") {
+    return {
+      session: 0,
+      weekly: 0,
+      error: "xAI Management Key must be team-scoped",
+    };
+  }
+  const teamId = typeof validationBody?.scopeId === "string" && validationBody.scopeId.trim()
+    ? validationBody.scopeId.trim()
+    : typeof validationBody?.teamId === "string" ? validationBody.teamId.trim() : "";
+  if (!teamId) return { session: 0, weekly: 0, error: "key validation did not return a team ID" };
+
+  const team = encodeURIComponent(teamId);
+  const [prepaid, preview] = await Promise.all([
+    requestJson(`${apiBase}/v1/billing/teams/${team}/prepaid/balance`, { headers }, config),
+    requestJson(`${apiBase}/v1/billing/teams/${team}/postpaid/invoice/preview`, { headers }, config),
+  ]);
+  const usage = extractXaiBillingFromPayloads(
+    prepaid.ok ? prepaid.data : undefined,
+    preview.ok ? preview.data : undefined,
+  );
+  if (!usage) {
+    const errors = [
+      prepaid.ok ? undefined : `prepaid balance: ${prepaid.error}`,
+      preview.ok ? undefined : `invoice preview: ${preview.error}`,
+    ].filter((error): error is string => Boolean(error));
+    return {
+      session: 0,
+      weekly: 0,
+      error: errors.length > 0 ? errors.join("; ") : "unrecognized xAI billing response shape",
+    };
+  }
+  const partialErrors = [
+    prepaid.ok ? undefined : `prepaid balance unavailable (${prepaid.error})`,
+    preview.ok ? undefined : `invoice preview unavailable (${preview.error})`,
+  ].filter((error): error is string => Boolean(error));
+  return { ...usage, warning: partialErrors.length > 0 ? partialErrors.join("; ") : undefined };
+}
+
+export function extractVercelCreditsFromPayload(payload: unknown): UsageData | null {
+  const root = asObject(payload);
+  if (!root) return null;
+  const balance = readNumber(root.balance);
+  const totalUsed = readNumber(root.total_used ?? root.totalUsed);
+  if (balance === null && totalUsed === null) return null;
+
+  return {
+    session: 0,
+    weekly: 0,
+    quotaHidden: true,
+    accountBalance: balance === null
+      ? undefined
+      : { amount: balance, unit: "USD", label: "Balance" },
+    accountSpend: totalUsed === null
+      ? undefined
+      : { unit: "USD", lifetime: totalUsed },
+    warning: balance !== null && balance <= 0
+      ? "Balance exhausted; inference requests may be rejected"
+      : undefined,
+  };
+}
+
+export async function fetchVercelCredits(token: string, config: FetchConfig = {}): Promise<UsageData> {
+  const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
+  const result = await requestJson(endpoints.vercelCredits, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+  }, config);
+  if (!result.ok) return { session: 0, weekly: 0, error: result.error };
+  return extractVercelCreditsFromPayload(result.data) ?? {
+    session: 0,
+    weekly: 0,
+    error: "unrecognized response shape",
+  };
+}
+
 export function extractMoonshotBalanceFromPayload(
   payload: unknown,
   provider: "moonshot" | "moonshot-cn" = "moonshot",
@@ -1284,6 +1558,9 @@ export function detectProvider(
     case "moonshotai": return "moonshot";
     case "moonshotai-cn": return "moonshot-cn";
     case "baseten": return "baseten";
+    case "vercel-ai-gateway": return "vercel";
+    case "fireworks": return "fireworks";
+    case "xai": return "xai";
     default: return null;
   }
 }
@@ -1302,6 +1579,9 @@ export function providerToPiProviderId(provider: AuthenticatedProviderKey): PiPr
     case "moonshot": return "moonshotai";
     case "moonshot-cn": return "moonshotai-cn";
     case "baseten": return "baseten";
+    case "vercel": return "vercel-ai-gateway";
+    case "fireworks": return "fireworks";
+    case "xai": return XAI_MANAGEMENT_PROVIDER_ID;
   }
 }
 
@@ -1335,6 +1615,9 @@ export async function fetchAllUsages(
     moonshot: null,
     "moonshot-cn": null,
     baseten: null,
+    vercel: null,
+    fireworks: null,
+    xai: null,
   };
   const tasks: Promise<void>[] = [];
 
@@ -1368,6 +1651,11 @@ export async function fetchAllUsages(
     assign("moonshot-cn", fetchMoonshotBalance(tokens["moonshot-cn"], "moonshot-cn", { ...config, endpoints }));
   }
   if (tokens.baseten) assign("baseten", fetchBasetenUsage(tokens.baseten, { ...config, endpoints }));
+  if (tokens.vercel) assign("vercel", fetchVercelCredits(tokens.vercel, { ...config, endpoints }));
+  if (tokens.fireworks) {
+    assign("fireworks", fetchFireworksUsage(tokens.fireworks, { ...config, endpoints, nowMs: config.nowMs }));
+  }
+  if (tokens.xai) assign("xai", fetchXaiUsage(tokens.xai, { ...config, endpoints }));
 
   await Promise.all(tasks);
 

@@ -8,11 +8,14 @@ import {
   detectProvider,
   extractBasetenUsageFromPayload,
   extractDeepSeekBalanceFromPayload,
+  extractFireworksSpendFromPayload,
   extractKimiUsageFromPayload,
   extractMiniMaxUsageFromPayload,
   extractMoonshotBalanceFromPayload,
   extractOpenRouterUsageFromPayloads,
   extractUsageFromPayload,
+  extractVercelCreditsFromPayload,
+  extractXaiBillingFromPayloads,
   extractZaiUsageFromPayload,
   fetchAllUsages,
   fetchClaudeUsage,
@@ -20,10 +23,13 @@ import {
   fetchCodexUsage,
   fetchBasetenUsage,
   fetchDeepSeekBalance,
+  fetchFireworksUsage,
   fetchKimiUsage,
   fetchMiniMaxUsage,
   fetchMoonshotBalance,
   fetchOpenRouterUsage,
+  fetchVercelCredits,
+  fetchXaiUsage,
   fetchZaiUsage,
   formatDuration,
   formatResetsAt,
@@ -87,6 +93,10 @@ const endpoints: UsageEndpoints = {
   moonshotBalance: "https://api.moonshot.test/v1/users/me/balance",
   moonshotCnBalance: "https://api.moonshot-cn.test/v1/users/me/balance",
   basetenUsage: "https://api.baseten.test/v1/billing/usage_summary",
+  vercelCredits: "https://ai-gateway.vercel.test/v1/credits",
+  fireworksApi: "https://api.fireworks.test/v1",
+  fireworksAccountId: undefined,
+  xaiManagementApi: "https://management-api.xai.test",
 };
 
 describe("formatting and parsing", () => {
@@ -271,6 +281,9 @@ describe("current Pi provider compatibility", () => {
     expect(detectProvider({ provider: "moonshotai" })).toBe("moonshot");
     expect(detectProvider({ provider: "moonshotai-cn" })).toBe("moonshot-cn");
     expect(detectProvider({ provider: "baseten" })).toBe("baseten");
+    expect(detectProvider({ provider: "vercel-ai-gateway" })).toBe("vercel");
+    expect(detectProvider({ provider: "fireworks" })).toBe("fireworks");
+    expect(detectProvider({ provider: "xai" })).toBe("xai");
     expect(detectProvider({ provider: "google-gemini-cli" })).toBeNull();
     expect(detectProvider({ provider: "google-antigravity" })).toBeNull();
   });
@@ -287,6 +300,9 @@ describe("current Pi provider compatibility", () => {
     expect(providerToPiProviderId("moonshot")).toBe("moonshotai");
     expect(providerToPiProviderId("moonshot-cn")).toBe("moonshotai-cn");
     expect(providerToPiProviderId("baseten")).toBe("baseten");
+    expect(providerToPiProviderId("vercel")).toBe("vercel-ai-gateway");
+    expect(providerToPiProviderId("fireworks")).toBe("fireworks");
+    expect(providerToPiProviderId("xai")).toBe("pi-usage-bars-xai-management");
   });
 
   it("resolves global and China endpoint overrides", () => {
@@ -304,6 +320,10 @@ describe("current Pi provider compatibility", () => {
       PI_MOONSHOT_BALANCE_ENDPOINT: "https://moonshot.example/balance",
       PI_MOONSHOT_CN_BALANCE_ENDPOINT: "https://moonshot-cn.example/balance",
       PI_BASETEN_USAGE_ENDPOINT: "https://baseten.example/usage",
+      PI_VERCEL_AI_GATEWAY_CREDITS_ENDPOINT: "https://vercel.example/credits",
+      PI_FIREWORKS_API_ENDPOINT: "https://fireworks.example/v1",
+      PI_FIREWORKS_ACCOUNT_ID: "my-account",
+      PI_XAI_MANAGEMENT_API_ENDPOINT: "https://management.xai.example",
     } as NodeJS.ProcessEnv)).toEqual({
       zai: "https://global.example/usage",
       zaiCn: "https://cn.example/usage",
@@ -318,6 +338,10 @@ describe("current Pi provider compatibility", () => {
       moonshotBalance: "https://moonshot.example/balance",
       moonshotCnBalance: "https://moonshot-cn.example/balance",
       basetenUsage: "https://baseten.example/usage",
+      vercelCredits: "https://vercel.example/credits",
+      fireworksApi: "https://fireworks.example/v1",
+      fireworksAccountId: "my-account",
+      xaiManagementApi: "https://management.xai.example",
     });
   });
 });
@@ -348,6 +372,201 @@ describe("provider fetchers", () => {
     expect(extractBasetenUsageFromPayload({ model_apis_usage: { subtotal: 4 } })).toBeNull();
     expect((await fetchBasetenUsage("token", { endpoints, fetchFn: async () => jsonResponse(403, {}) })).error)
       .toBe("HTTP 403");
+  });
+
+  it("discovers one Fireworks account and fetches current-month rated spend", async () => {
+    const urls: string[] = [];
+    const usage = await fetchFireworksUsage("fireworks-key", {
+      endpoints,
+      nowMs: Date.parse("2026-09-24T12:00:00.000Z"),
+      fetchFn: async (url, init) => {
+        urls.push(url);
+        expect(init?.headers).toMatchObject({ Authorization: "Bearer fireworks-key" });
+        if (url.includes("/accounts?pageSize=")) {
+          return jsonResponse(200, {
+            accounts: [{ name: "accounts/test-account" }],
+            // Fireworks has been observed returning 0 with one usable account.
+            totalSize: 0,
+          });
+        }
+        return jsonResponse(200, { lineItems: [
+          { totalCost: { currencyCode: "USD", units: "1", nanos: 500_000_000 } },
+          { totalCost: { currencyCode: "USD", units: "2", nanos: 250_000_000 } },
+        ], usageBuckets: [] });
+      },
+    });
+    expect(usage).toMatchObject({
+      quotaHidden: true,
+      accountSpend: { unit: "USD", monthly: 3.75 },
+    });
+    expect(urls).toEqual([
+      "https://api.fireworks.test/v1/accounts?pageSize=200",
+      "https://api.fireworks.test/v1/accounts/test-account/billing/summary?startTime=2026-09-01T00%3A00%3A00.000Z&endTime=2026-09-25T00%3A00%3A00.000Z",
+    ]);
+    expect(extractFireworksSpendFromPayload({ lineItems: [] })).toMatchObject({
+      accountSpend: { unit: "USD", monthly: 0 },
+    });
+    expect(extractFireworksSpendFromPayload({ lineItems: [
+      { totalCost: { currencyCode: "USD", units: "1", nanos: 0 } },
+      { totalCost: { currencyCode: "EUR", units: "1", nanos: 0 } },
+    ] })).toBeNull();
+    expect(extractFireworksSpendFromPayload({
+      lineItems: [{ totalCost: { currencyCode: "USD", units: "not-a-number" } }],
+    })).toBeNull();
+    expect(extractFireworksSpendFromPayload({ usageBuckets: [] })).toBeNull();
+  });
+
+  it("retries transient Fireworks failures once and respects cancellation", async () => {
+    let accountAttempts = 0;
+    let billingAttempts = 0;
+    const recovered = await fetchFireworksUsage("token", {
+      endpoints,
+      fetchFn: async (url) => {
+        if (url.includes("/accounts?pageSize=")) {
+          accountAttempts += 1;
+          if (accountAttempts === 1) return jsonResponse(503, {}, { "retry-after": "0" });
+          return jsonResponse(200, {
+            accounts: [{ name: "accounts/test-account" }],
+            totalSize: 1,
+          });
+        }
+        billingAttempts += 1;
+        if (billingAttempts === 1) return jsonResponse(429, {}, { "retry-after": "0" });
+        return jsonResponse(200, { lineItems: [] });
+      },
+    });
+    expect(recovered).toMatchObject({ accountSpend: { unit: "USD", monthly: 0 } });
+    expect({ accountAttempts, billingAttempts }).toEqual({ accountAttempts: 2, billingAttempts: 2 });
+
+    let exhaustedAttempts = 0;
+    const exhausted = await fetchFireworksUsage("token", {
+      endpoints,
+      fetchFn: async () => {
+        exhaustedAttempts += 1;
+        return jsonResponse(503, {}, { "retry-after": "0" });
+      },
+    });
+    expect(exhausted.error).toBe("account discovery: HTTP 503");
+    expect(exhaustedAttempts).toBe(2);
+
+    const controller = new AbortController();
+    let cancelledAttempts = 0;
+    const cancelled = await fetchFireworksUsage("token", {
+      endpoints,
+      signal: controller.signal,
+      fetchFn: async () => {
+        cancelledAttempts += 1;
+        controller.abort();
+        return jsonResponse(503, {}, { "retry-after": "60" });
+      },
+    });
+    expect(cancelled.error).toBe("account discovery: request cancelled");
+    expect(cancelledAttempts).toBe(1);
+  });
+
+  it("requires and validates a Fireworks account override when multiple accounts are accessible", async () => {
+    const accountsPayload = {
+      accounts: [{ name: "accounts/team-a" }, { name: "accounts/team-b" }],
+      totalSize: 2,
+    };
+    const fetchFn: FetchLike = async (url) => url.includes("/accounts?pageSize=")
+      ? jsonResponse(200, accountsPayload)
+      : jsonResponse(200, { lineItems: [] });
+
+    expect((await fetchFireworksUsage("token", { endpoints, fetchFn })).error)
+      .toBe("multiple Fireworks accounts; set PI_FIREWORKS_ACCOUNT_ID");
+    expect((await fetchFireworksUsage("token", {
+      endpoints: { ...endpoints, fireworksAccountId: "missing" },
+      fetchFn,
+    })).error).toBe("PI_FIREWORKS_ACCOUNT_ID is not accessible with this key");
+    expect(await fetchFireworksUsage("token", {
+      endpoints: { ...endpoints, fireworksAccountId: "accounts/team-b" },
+      fetchFn,
+    })).toMatchObject({ accountSpend: { unit: "USD", monthly: 0 } });
+  });
+
+  it("validates a team-scoped xAI Management Key and fetches billing values", async () => {
+    const urls: string[] = [];
+    const fetchFn: FetchLike = async (url, init) => {
+      urls.push(url);
+      expect(init?.headers).toMatchObject({ Authorization: "Bearer management-key" });
+      if (url.endsWith("/auth/management-keys/validation")) {
+        return jsonResponse(200, { scope: "SCOPE_TEAM", scopeId: "team-id" });
+      }
+      if (url.endsWith("/prepaid/balance")) {
+        return jsonResponse(200, { total: { val: "-1457" }, changes: [] });
+      }
+      return jsonResponse(200, { coreInvoice: { totalWithCorr: { val: "32" } } });
+    };
+    const usage = await fetchXaiUsage("management-key", { endpoints, fetchFn });
+    expect(usage).toMatchObject({
+      quotaHidden: true,
+      accountBalance: { amount: 14.57, unit: "USD", label: "Prepaid balance" },
+      accountSpend: { unit: "USD", monthly: 0.32 },
+    });
+    expect(urls).toEqual([
+      "https://management-api.xai.test/auth/management-keys/validation",
+      "https://management-api.xai.test/v1/billing/teams/team-id/prepaid/balance",
+      "https://management-api.xai.test/v1/billing/teams/team-id/postpaid/invoice/preview",
+    ]);
+    expect(extractXaiBillingFromPayloads(
+      { total: { val: "-100" } },
+      { coreInvoice: { totalWithCorr: { val: "25" } } },
+    )).toMatchObject({
+      accountBalance: { amount: 1 },
+      accountSpend: { monthly: 0.25 },
+    });
+  });
+
+  it("rejects organization-scoped xAI keys and tolerates one unavailable billing endpoint", async () => {
+    const organizationKey = await fetchXaiUsage("token", {
+      endpoints,
+      fetchFn: async () => jsonResponse(200, { scope: "SCOPE_ORGANIZATION", scopeId: "org-id" }),
+    });
+    expect(organizationKey.error).toBe("xAI Management Key must be team-scoped");
+
+    const partial = await fetchXaiUsage("token", {
+      endpoints,
+      fetchFn: async (url) => {
+        if (url.endsWith("/validation")) {
+          return jsonResponse(200, { scope: "SCOPE_TEAM", scopeId: "team-id" });
+        }
+        if (url.endsWith("/prepaid/balance")) return jsonResponse(403, {});
+        return jsonResponse(200, { coreInvoice: { totalWithCorr: { val: "75" } } });
+      },
+    });
+    expect(partial).toMatchObject({
+      accountSpend: { unit: "USD", monthly: 0.75 },
+      warning: "prepaid balance unavailable (HTTP 403)",
+    });
+    expect(extractXaiBillingFromPayloads({}, {})).toBeNull();
+  });
+
+  it("fetches Vercel AI Gateway balance and lifetime spend through its Pi-resolved key", async () => {
+    let request: { url: string; authorization: string | null } | undefined;
+    const usage = await fetchVercelCredits("vercel-key", {
+      endpoints,
+      fetchFn: async (url, init) => {
+        request = { url, authorization: new Headers(init?.headers).get("authorization") };
+        return jsonResponse(200, { balance: "95.50", total_used: "4.50" });
+      },
+    });
+    expect(usage).toMatchObject({
+      quotaHidden: true,
+      accountBalance: { amount: 95.5, unit: "USD", label: "Balance" },
+      accountSpend: { unit: "USD", lifetime: 4.5 },
+    });
+    expect(request).toEqual({
+      url: endpoints.vercelCredits,
+      authorization: "Bearer vercel-key",
+    });
+    expect(extractVercelCreditsFromPayload({ total_used: "1.25" })).toMatchObject({
+      quotaHidden: true,
+      accountSpend: { unit: "USD", lifetime: 1.25 },
+    });
+    expect(extractVercelCreditsFromPayload({ balance: "not-a-number" })).toBeNull();
+    expect((await fetchVercelCredits("token", { endpoints, fetchFn: async () => jsonResponse(401, {}) })).error)
+      .toBe("HTTP 401");
   });
 
   it("fetches Codex usage and handles HTTP/JSON failures", async () => {
