@@ -19,6 +19,9 @@
 
 ### Fixed
 
+- Recognize `openai` ChatGPT OAuth with a neutral plan indicator and a usage
+  settings link. Do not send its token to the incompatible legacy Codex quota
+  endpoint or show subscription indicators for API-key accounts.
 - Retry transient Fireworks `429`, `502`, `503`, and `504` responses once,
   respecting `Retry-After` and request cancellation.
 

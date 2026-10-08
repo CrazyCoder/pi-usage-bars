@@ -4,6 +4,7 @@ import * as path from "node:path";
 
 export type ProviderKey =
   | "central"
+  | "openai"
   | "codex"
   | "claude"
   | "zai"
@@ -21,6 +22,7 @@ export type ProviderKey =
   | "xai";
 export type AuthenticatedProviderKey = Exclude<ProviderKey, "central">;
 export type PiProviderId =
+  | "openai"
   | "openai-codex"
   | "anthropic"
   | "zai"
@@ -87,6 +89,14 @@ export interface UsageData {
 
 export type UsageByProvider = Record<ProviderKey, UsageData | null>;
 export type UsageTokens = Partial<Record<AuthenticatedProviderKey, string>>;
+
+// SIWC tokens cannot query Codex's quota endpoint. Do not invent percentages.
+export const CHATGPT_PLAN_USAGE: UsageData = {
+  session: 0,
+  weekly: 0,
+  quotaHidden: true,
+  notice: "Quota unavailable. Manage usage: https://chatgpt.com/settings/usage",
+};
 
 export interface UsageEndpoints {
   zai: string;
@@ -1546,6 +1556,7 @@ export function detectProvider(
   if (!model || typeof model === "string") return null;
   if (isCentralModel(model)) return "central";
   switch ((model.provider || "").toLowerCase()) {
+    case "openai": return "openai";
     case "openai-codex": return "codex";
     case "anthropic": return "claude";
     case "zai": return "zai";
@@ -1567,6 +1578,7 @@ export function detectProvider(
 
 export function providerToPiProviderId(provider: AuthenticatedProviderKey): PiProviderId {
   switch (provider) {
+    case "openai": return "openai";
     case "codex": return "openai-codex";
     case "claude": return "anthropic";
     case "zai": return "zai";
@@ -1603,6 +1615,7 @@ export async function fetchAllUsages(
   const endpoints = config.endpoints ?? resolveUsageEndpoints(config.env);
   const results: UsageByProvider = {
     central: null,
+    openai: tokens.openai ? CHATGPT_PLAN_USAGE : null,
     codex: null,
     claude: null,
     zai: null,

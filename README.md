@@ -15,6 +15,7 @@ It adds:
 | Provider | Pi provider ID | Authentication |
 | -- | -- | -- |
 | JetBrains Central | Any provider routed by Central | JetBrains Central CLI |
+| ChatGPT plan indicator | `openai` | ChatGPT subscription OAuth only |
 | OpenAI Codex | `openai-codex` | ChatGPT subscription OAuth |
 | Anthropic Claude | `anthropic` | Claude Pro/Max OAuth |
 | ZAI Coding Plan (Global) | `zai` | ZAI API key |
@@ -38,6 +39,13 @@ Central session pays for. The footer shows the monthly Central credit limit as
 Both bars include dollar amounts and reset countdowns. This applies to
 Anthropic, OpenAI, OpenAI Codex, and any future provider routed through the same
 proxy marker.
+
+For the new `openai` ChatGPT login, the footer shows **ChatGPT plan**, not quota
+percentages. `/usage` links to
+[ChatGPT usage settings](https://chatgpt.com/settings/usage). This token cannot
+query the legacy Codex quota endpoint. API-key accounts stay hidden, and the
+extension never substitutes a legacy Codex account's quota. The `openai-codex`
+provider keeps its existing quota bars.
 
 DeepSeek shows total, topped-up, and granted balances in the currency returned
 by the API. Moonshot shows available, cash, and voucher balances; this is

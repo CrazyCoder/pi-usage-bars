@@ -24,6 +24,7 @@ import {
   type CentralUsageOptions,
 } from "./central";
 import {
+  CHATGPT_PLAN_USAGE,
   clampPercent,
   colorForPercent,
   detectProvider,
@@ -62,6 +63,7 @@ const USAGE_UPDATE_EVENT = `${EXTENSION_ID}:update`;
 const XAI_MANAGEMENT_PROVIDER_NAME = "xAI Management (pi-usage-bars)";
 const PROVIDERS: readonly ProviderKey[] = [
   "central",
+  "openai",
   "codex",
   "claude",
   "zai",
@@ -84,6 +86,7 @@ const AUTHENTICATED_PROVIDERS = PROVIDERS.filter(
 
 const PROVIDER_LABELS: Record<ProviderKey, string> = {
   central: "Central",
+  openai: "ChatGPT plan",
   codex: "Codex",
   claude: "Claude",
   zai: "ZAI Coding Plan (Global)",
@@ -549,6 +552,7 @@ export default function (
   const endpoints = resolveUsageEndpoints();
   const state: UsageState = {
     central: null,
+    openai: null,
     codex: null,
     claude: null,
     zai: null,
@@ -607,6 +611,10 @@ export default function (
       return;
     }
     if (data.quotaHidden) {
+      if (provider === "openai") {
+        ctx.ui.setStatus(STATUS_KEY, theme.fg("dim", label));
+        return;
+      }
       const financial = [
         data.accountBalance ? formatAccountBalance(data.accountBalance) : undefined,
         data.accountUsage ? formatAccountBalance(data.accountUsage) : undefined,
@@ -672,7 +680,7 @@ export default function (
     return false;
   }
 
-  function isClaudeSubscriptionAuth(source: string | undefined): boolean {
+  function isSubscriptionAuth(source: string | undefined): boolean {
     // Pi 0.84 exposes AuthResult.source as a human-readable label rather than a
     // credential-type discriminator. Keep the compatibility assumption in one
     // place until ModelRegistry exposes the resolved credential type directly.
@@ -687,7 +695,7 @@ export default function (
 
     try {
       const resolved = await ctx.modelRegistry.getProviderAuth(providerId);
-      if (provider === "claude" && !isClaudeSubscriptionAuth(resolved?.source)) return {};
+      if ((provider === "claude" || provider === "openai") && !isSubscriptionAuth(resolved?.source)) return {};
       const token = resolved?.auth.apiKey;
       if (token) return { token };
       // Some OAuth flows (e.g. kimi-coding) expose the token only as a Bearer
@@ -724,6 +732,7 @@ export default function (
       return;
     }
 
+    if (provider === "openai") state.openai = CHATGPT_PLAN_USAGE;
     if (provider === "codex") state.codex = await fetchCodexUsage(credential.token, { signal });
     if (provider === "claude") state.claude = await fetchClaudeUsageWithFallback(credential.token, { signal });
     if (provider === "zai") state.zai = await fetchZaiUsage(credential.token, "zai", { endpoints, signal });

@@ -259,6 +259,7 @@ describe("current Pi provider compatibility", () => {
   });
 
   it("detects supported current providers", () => {
+    expect(detectProvider({ provider: "openai" })).toBe("openai");
     expect(detectProvider({ provider: "openai-codex" })).toBe("codex");
     expect(detectProvider({ provider: "anthropic" })).toBe("claude");
     expect(detectProvider({
@@ -965,6 +966,17 @@ describe("provider fetchers", () => {
 });
 
 describe("all-provider orchestration", () => {
+  it("lists the ChatGPT plan without a quota request", async () => {
+    let requests = 0;
+    const results = await fetchAllUsages({ openai: "oauth-token" }, {
+      fetchFn: async () => { requests += 1; throw new Error("No request expected"); },
+    });
+    expect(requests).toBe(0);
+    expect(results.openai?.quotaHidden).toBe(true);
+    expect(results.openai?.notice).toContain("https://chatgpt.com/settings/usage");
+    expect(results.codex).toBeNull();
+  });
+
   it("hides the expected Moonshot regional failure for Pi's shared environment key", async () => {
     const fetchFn: FetchLike = async (url) => url === endpoints.moonshotBalance
       ? jsonResponse(200, { data: { available_balance: 12, voucher_balance: 2, cash_balance: 10 } })

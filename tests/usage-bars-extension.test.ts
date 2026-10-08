@@ -192,6 +192,47 @@ describe("usage-bars extension lifecycle", () => {
     expect(mock.statuses).toHaveLength(0);
   });
 
+  it("shows the OpenAI ChatGPT plan without polling the legacy quota endpoint", async () => {
+    let requests = 0;
+    globalThis.fetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as typeof fetch;
+    const harness = createHarness();
+    const mock = createContext("tui", "openai", { configured: true, source: "OAuth", token: "chatgpt-token" });
+    const providers: string[] = [];
+    const resolve = mock.context.modelRegistry.getProviderAuth.bind(mock.context.modelRegistry);
+    mock.context.modelRegistry.getProviderAuth = async (provider) => {
+      providers.push(provider);
+      return resolve(provider);
+    };
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(providers).toEqual(["openai"]);
+    expect(requests).toBe(0);
+    expect(mock.statuses.at(-1)).toBe("ChatGPT plan");
+    expect(harness.emitted).toContainEqual({
+      name: "@jetserge/pi-usage-bars:update",
+      data: expect.objectContaining({
+        provider: "openai",
+        quotaHidden: true,
+        notice: expect.stringContaining("https://chatgpt.com/settings/usage"),
+      }),
+    });
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it.each(["API key", undefined])("does not show a ChatGPT plan for OpenAI auth source %s", async (source) => {
+    let requests = 0;
+    globalThis.fetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as typeof fetch;
+    const harness = createHarness();
+    const mock = createContext("tui", "openai", { configured: true, source, token: "api-key" });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.authCalls()).toBe(1);
+    expect(requests).toBe(0);
+    expect(mock.statuses.at(-1)).toBeUndefined();
+    expect(harness.emitted).toHaveLength(0);
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("uses Pi provider auth and emits usage updates in TUI mode", async () => {
     globalThis.fetch = (async () => new Response(JSON.stringify({
       rate_limit: {
