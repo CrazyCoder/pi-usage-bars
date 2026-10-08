@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 
 export type ProviderKey =
   | "central"
@@ -97,6 +98,19 @@ export const CHATGPT_PLAN_USAGE: UsageData = {
   quotaHidden: true,
   notice: "Quota unavailable. Manage usage: https://chatgpt.com/settings/usage",
 };
+
+// This fingerprint binds user consent, not authentication. Pi resolves the tokens.
+export function openaiQuotaLink(openaiToken: string, codexToken: string): string | undefined {
+  try {
+    const openai = JSON.parse(Buffer.from(openaiToken.split(".")[1]!, "base64url").toString("utf8"));
+    const codex = JSON.parse(Buffer.from(codexToken.split(".")[1]!, "base64url").toString("utf8"));
+    const identity = [openai?.client_id, openai?.sub, codex?.sub, codex?.["https://api.openai.com/auth"]?.chatgpt_account_id];
+    if (!identity.every(value => typeof value === "string" && value.length > 0)) return undefined;
+    return createHash("sha256").update(JSON.stringify(identity)).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
 
 export interface UsageEndpoints {
   zai: string;

@@ -4,6 +4,9 @@
 
 ### Added
 
+- Allow a user-confirmed, identity-bound Codex quota link for `openai` OAuth.
+  Show real shared-plan percentages and reset times without forwarding the
+  OpenAI token to the legacy endpoint. Stop polling if either identity changes.
 - Added Vercel AI Gateway balance and lifetime-spend reporting through its
   documented key-authenticated Credits API.
 - Added Fireworks AI current-month account spend reporting through its

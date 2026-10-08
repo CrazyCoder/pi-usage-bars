@@ -44,8 +44,22 @@ For the new `openai` ChatGPT login, the footer shows **ChatGPT plan**, not quota
 percentages. `/usage` links to
 [ChatGPT usage settings](https://chatgpt.com/settings/usage). This token cannot
 query the legacy Codex quota endpoint. API-key accounts stay hidden, and the
-extension never substitutes a legacy Codex account's quota. The `openai-codex`
-provider keeps its existing quota bars.
+extension never silently substitutes a legacy Codex account's quota. The
+`openai-codex` provider keeps its existing quota bars.
+
+To show Codex-style shared-plan bars while using `openai`, explicitly confirm
+that both OAuth logins use the same ChatGPT account and workspace, then save
+their `openaiQuotaLink(openaiToken, codexToken)` fingerprint (exported by
+`extensions/usage-bars/core.ts`) as `openaiCodexQuotaLink` in
+`~/.pi/agent/usage-bars.json`. Compute it locally without printing or saving the
+tokens. This is a user-confirmed link, not automatic account verification.
+
+The extension resolves both credentials through Pi and uses only the Codex token
+for quota requests. The fingerprint binds the OpenAI client and subject to the
+Codex subject and workspace. Token refresh preserves it. Changing either
+identity disables polling until the link is confirmed and recreated. Remove
+`openaiCodexQuotaLink` to unlink. These bars show the shared plan, **not Pi's
+separate per-app cap**, which remains available in ChatGPT settings.
 
 DeepSeek shows total, topped-up, and granted balances in the currency returned
 by the API. Moonshot shows available, cash, and voucher balances; this is

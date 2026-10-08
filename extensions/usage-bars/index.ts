@@ -18,6 +18,7 @@ import {
 } from "@earendil-works/pi-tui";
 import {
   CENTRAL_CONFIG_PATH,
+  readConfig,
   fetchCentralUsage as defaultFetchCentralUsage,
   getCentralDailyLimit as defaultGetCentralDailyLimit,
   setCentralDailyLimit as defaultSetCentralDailyLimit,
@@ -25,6 +26,7 @@ import {
 } from "./central";
 import {
   CHATGPT_PLAN_USAGE,
+  openaiQuotaLink,
   clampPercent,
   colorForPercent,
   detectProvider,
@@ -509,6 +511,7 @@ interface UsageState extends UsageByProvider {
 }
 
 export interface UsageBarsDependencies {
+  getOpenaiQuotaLink(): unknown;
   centralConfigPath: string;
   fetchCentralUsage(options?: CentralUsageOptions): Promise<UsageData>;
   getCentralDailyLimit(): number;
@@ -516,6 +519,7 @@ export interface UsageBarsDependencies {
 }
 
 const DEFAULT_DEPENDENCIES: UsageBarsDependencies = {
+  getOpenaiQuotaLink: () => readConfig(CENTRAL_CONFIG_PATH).openaiCodexQuotaLink,
   centralConfigPath: CENTRAL_CONFIG_PATH,
   fetchCentralUsage: defaultFetchCentralUsage,
   getCentralDailyLimit: defaultGetCentralDailyLimit,
@@ -695,7 +699,7 @@ export default function (
 
     try {
       const resolved = await ctx.modelRegistry.getProviderAuth(providerId);
-      if ((provider === "claude" || provider === "openai") && !isSubscriptionAuth(resolved?.source)) return {};
+      if ((provider === "claude" || provider === "openai" || provider === "codex") && !isSubscriptionAuth(resolved?.source)) return {};
       const token = resolved?.auth.apiKey;
       if (token) return { token };
       // Some OAuth flows (e.g. kimi-coding) expose the token only as a Bearer
@@ -707,6 +711,33 @@ export default function (
       return { error: "configured authentication did not resolve a token" };
     } catch (error) {
       return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  async function fetchOpenaiUsage(
+    ctx: ExtensionContext,
+    token: string,
+    signal: AbortSignal,
+    cached?: { credential: CredentialResolution; usage: UsageData | null },
+  ): Promise<UsageData> {
+    try {
+      const link = dependencies.getOpenaiQuotaLink();
+      if (link === undefined) return CHATGPT_PLAN_USAGE;
+      if (typeof link !== "string" || !/^[a-f0-9]{64}$/.test(link)) {
+        throw new Error("invalid openaiCodexQuotaLink in usage-bars.json");
+      }
+      const codex = cached?.credential ?? await resolveCredential(ctx, "codex");
+      if (codex.error) throw new Error(codex.error);
+      if (!codex.token) throw new Error("linked Codex OAuth login unavailable");
+      if (openaiQuotaLink(token, codex.token) !== link) {
+        throw new Error("quota account link changed; confirm and relink the OpenAI and Codex logins");
+      }
+      if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+      const usage = cached ? cached.usage : await fetchCodexUsage(codex.token, { signal });
+      if (!usage) throw new Error("linked Codex quota unavailable");
+      return { ...usage, notice: "Shared plan via linked Codex account. Pi app cap not included. https://chatgpt.com/settings/usage" };
+    } catch (error) {
+      return { session: 0, weekly: 0, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
@@ -732,7 +763,7 @@ export default function (
       return;
     }
 
-    if (provider === "openai") state.openai = CHATGPT_PLAN_USAGE;
+    if (provider === "openai") state.openai = await fetchOpenaiUsage(ctx, credential.token, signal);
     if (provider === "codex") state.codex = await fetchCodexUsage(credential.token, { signal });
     if (provider === "claude") state.claude = await fetchClaudeUsageWithFallback(credential.token, { signal });
     if (provider === "zai") state.zai = await fetchZaiUsage(credential.token, "zai", { endpoints, signal });
@@ -816,6 +847,12 @@ export default function (
       state.activeProvider === "central" ? dependencies.fetchCentralUsage({ signal }) : null,
     ]);
     results.central = central;
+    if (tokens.openai) {
+      results.openai = await fetchOpenaiUsage(ctx, tokens.openai, signal, {
+        credential: { token: tokens.codex, error: authErrors.codex },
+        usage: results.codex,
+      });
+    }
     for (const provider of AUTHENTICATED_PROVIDERS) {
       const error = authErrors[provider];
       if (error) results[provider] = { session: 0, weekly: 0, error: `auth resolution failed (${error})` };

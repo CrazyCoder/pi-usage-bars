@@ -8,6 +8,13 @@ import usageBarsExtension, {
   type UsageBarsDependencies,
   XAI_MANAGEMENT_PROVIDER_ID,
 } from "../extensions/usage-bars/index";
+import { createHash } from "node:crypto";
+import { openaiQuotaLink } from "../extensions/usage-bars/core";
+
+const jwt = (claims: unknown) => `header.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.signature`;
+const openaiToken = jwt({ client_id: "client", sub: "openai-user" });
+const codexToken = jwt({ sub: "codex-user", "https://api.openai.com/auth": { chatgpt_account_id: "workspace" } });
+const quotaLink = createHash("sha256").update(JSON.stringify(["client", "openai-user", "codex-user", "workspace"])).digest("hex");
 
 interface Harness {
   handlers: Map<string, (event: unknown, ctx: ExtensionContext) => unknown>;
@@ -43,7 +50,7 @@ function createHarness(options: { usageFlag?: boolean; dependencies?: Partial<Us
       },
     },
   } as unknown as ExtensionAPI;
-  usageBarsExtension(pi, options.dependencies);
+  usageBarsExtension(pi, { getOpenaiQuotaLink: () => undefined, ...options.dependencies });
   return harness;
 }
 
@@ -115,6 +122,107 @@ afterEach(() => {
 });
 
 describe("usage-bars extension lifecycle", () => {
+  it("uses only the explicitly linked Codex account for OpenAI quota bars", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      requests.push(new Headers(init?.headers).get("authorization")!);
+      return new Response(JSON.stringify({ rate_limit: {
+        primary_window: { used_percent: 12, reset_after_seconds: 3600 },
+        secondary_window: { used_percent: 34, reset_after_seconds: 86400 },
+      } }), { status: 200 });
+    }) as typeof fetch;
+    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    const mock = createContext("tui", "openai", { configured: true });
+    mock.context.modelRegistry.getProviderAuth = async (provider) => ({
+      auth: { apiKey: provider === "openai" ? openaiToken : codexToken }, source: "OAuth",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(requests).toEqual([`Bearer ${codexToken}`]);
+    expect(mock.statuses.at(-1)).toContain("12%");
+    expect(mock.statuses.at(-1)).toContain("34%");
+    expect(mock.statuses.at(-1)).toContain("⟳");
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("renders the linked shared-plan quota and its limitation in /usage", async () => {
+    const requests: string[] = [];
+    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+      requests.push(new Headers(init?.headers).get("authorization")!);
+      return new Response(JSON.stringify({
+        rate_limit: { secondary_window: { used_percent: 34, reset_after_seconds: 86400 } },
+      }), { status: 200 });
+    }) as typeof fetch;
+    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    const mock = createContext("tui", "openai", { configured: true });
+    const context = mock.context as any;
+    context.modelRegistry.getProvider = (provider: string) => ["openai", "openai-codex"].includes(provider) ? {} : undefined;
+    context.modelRegistry.getProviderAuth = async (provider: string) => ({
+      auth: { apiKey: provider === "openai" ? openaiToken : codexToken }, source: "OAuth",
+    });
+    let screen = "";
+    context.ui.custom = async (factory: (...args: any[]) => any) => {
+      let rendered!: () => void;
+      const ready = new Promise<void>(resolve => { rendered = resolve; });
+      const component = factory(
+        { terminal: { rows: 30 }, requestRender: () => rendered() },
+        context.ui.theme,
+        { matches: () => false },
+        () => {},
+      );
+      await ready;
+      screen = component.render(140).join("\n");
+      component.dispose();
+    };
+    await harness.commands.get("usage")?.handler("", mock.context);
+    expect(requests).toEqual([`Bearer ${codexToken}`]);
+    expect(screen).toContain("34%");
+    expect(screen).toContain("resets in");
+    expect(screen).toContain("Shared plan via linked Codex account");
+    expect(screen).toContain("Pi app cap not included");
+    expect(screen).toContain("https://chatgpt.com/settings/usage");
+  });
+
+  it("keeps consent across token refreshes but binds both users, client, and workspace", () => {
+    expect(openaiQuotaLink(openaiToken, codexToken)).toBe(quotaLink);
+    expect(openaiQuotaLink(
+      jwt({ client_id: "client", sub: "openai-user", exp: 9999 }),
+      jwt({ sub: "codex-user", exp: 9999, "https://api.openai.com/auth": { chatgpt_account_id: "workspace" } }),
+    )).toBe(quotaLink);
+    for (const changed of [{ client_id: "other", sub: "openai-user" }, { client_id: "client", sub: "other" }]) {
+      expect(openaiQuotaLink(jwt(changed), codexToken)).not.toBe(quotaLink);
+    }
+    for (const changed of [
+      { sub: "other", "https://api.openai.com/auth": { chatgpt_account_id: "workspace" } },
+      { sub: "codex-user", "https://api.openai.com/auth": { chatgpt_account_id: "other" } },
+    ]) expect(openaiQuotaLink(openaiToken, jwt(changed))).not.toBe(quotaLink);
+    expect(openaiQuotaLink("bad-token", codexToken)).toBeUndefined();
+    expect(openaiQuotaLink(openaiToken, jwt({}))).toBeUndefined();
+  });
+
+  it.each(["changed account", "missing login", "API key", "invalid config"])("fails closed for a linked quota %s", async (failure) => {
+    let requests = 0;
+    globalThis.fetch = (async () => { requests += 1; throw new Error("Must not request quota"); }) as unknown as typeof fetch;
+    const harness = createHarness({ dependencies: {
+      getOpenaiQuotaLink: () => failure === "invalid config" ? true : quotaLink,
+    } });
+    const mock = createContext("tui", "openai", { configured: true });
+    mock.context.modelRegistry.getProviderAuth = async (provider) => {
+      if (provider === "openai") return { auth: { apiKey: openaiToken }, source: "OAuth" };
+      if (failure === "missing login") return undefined;
+      return {
+        auth: { apiKey: failure === "changed account" ? jwt({ sub: "other" }) : codexToken },
+        source: failure === "API key" ? "API key" : "OAuth",
+      };
+    };
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(requests).toBe(0);
+    expect(mock.statuses.at(-1)).toContain("usage unavailable");
+    expect(harness.emitted).toHaveLength(0);
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("registers model-less xAI Management authentication with Pi", async () => {
     const harness = createHarness();
     const provider = harness.providers[0] as {
@@ -582,7 +690,7 @@ describe("usage-bars extension lifecycle", () => {
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
 
-  it("aborts /usage requests when the custom component closes", async () => {
+  it.each(["openai-codex", "openai"])("aborts /usage requests for %s when the custom component closes", async (provider) => {
     let selectorRequestAborted = false;
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
@@ -592,16 +700,19 @@ describe("usage-bars extension lifecycle", () => {
         }, { once: true });
       })) as unknown as typeof fetch;
 
-    const harness = createHarness();
-    const mock = createContext("tui", "openai-codex", {
+    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    const mock = createContext("tui", provider, {
       configured: true,
       source: "OAuth",
       token: "resolved-by-pi",
     });
     const context = mock.context as any;
-    context.modelRegistry.getProvider = (provider: string) => provider === "openai-codex" ? {} : undefined;
+    context.modelRegistry.getProvider = (id: string) => ["openai", "openai-codex"].includes(id) ? {} : undefined;
     context.modelRegistry.getProviderAuthStatus = (provider: string) => ({
-      configured: provider === "openai-codex",
+      configured: ["openai", "openai-codex"].includes(provider),
+    });
+    context.modelRegistry.getProviderAuth = async (id: string) => ({
+      auth: { apiKey: id === "openai" ? openaiToken : codexToken }, source: "OAuth",
     });
     context.ui.custom = async (factory: (...args: any[]) => any) => {
       let component: { handleInput?(data: string): void; dispose?(): void } | undefined;
