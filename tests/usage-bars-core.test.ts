@@ -312,6 +312,7 @@ describe("current Pi provider compatibility", () => {
 
   it("detects every built-in Pi model of a supported provider on its default route", () => {
     const supported = [
+      "openai",
       "openai-codex",
       "anthropic",
       "zai",

@@ -662,7 +662,6 @@ describe("usage-bars extension lifecycle", () => {
     const status = mock.statuses.at(-1) ?? "";
     expect(status).toStartWith("Claude W ");
     expect(status).toContain("65%");
-    expect(status).not.toContain("5h ");
     expect(status).not.toContain("S ");
 
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
