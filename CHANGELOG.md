@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Store the Claude cache entry under a new key. Pi sessions running an older
+  release share the cache file and kept writing entries without the hidden
+  session flag, so a reloaded session still drew the empty five-hour bar.
+
 ## [0.7.3] - 2026-11-01
 
 ### Added

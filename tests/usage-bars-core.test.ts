@@ -722,6 +722,26 @@ describe("provider fetchers", () => {
     expect(usage.weeklyHidden).toBeUndefined();
   });
 
+  it("ignores a fresh Claude entry written by an older release that shares the cache file", async () => {
+    const cacheFile = tempFile("shared-with-older-release.json");
+    const nowMs = Date.parse("2026-02-18T12:00:00.000Z");
+    fs.writeFileSync(cacheFile, JSON.stringify({
+      version: 1,
+      claude: { lastSuccess: { session: 0, weekly: 65, fetchedAt: nowMs }, lastSuccessAt: nowMs },
+    }));
+    let calls = 0;
+    const usage = await fetchClaudeUsageWithFallback("token", {
+      cacheFile,
+      nowMs,
+      fetchFn: async () => {
+        calls += 1;
+        return jsonResponse(200, { five_hour: null, seven_day: { utilization: 66 } });
+      },
+    });
+    expect(calls).toBe(1);
+    expect(usage).toMatchObject({ weekly: 66, sessionHidden: true });
+  });
+
   it("returns stale cached Claude usage during a 429 cooldown", async () => {
     const cacheFile = tempFile("claude-cache.json");
     const first = await fetchClaudeUsageWithFallback("token", {

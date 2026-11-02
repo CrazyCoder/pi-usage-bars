@@ -205,9 +205,15 @@ interface ClaudeUsageCacheState {
   lastError?: string;
 }
 
+// The cache file is shared by every running Pi session, including sessions on
+// older releases of this extension. Bump the Claude key whenever the stored
+// snapshot gains a field older writers do not set, so a newer reader never
+// renders their incomplete entries.
+const CLAUDE_CACHE_KEY = "claude2";
+
 interface UsageBarsCacheFile {
   version: 1;
-  claude?: ClaudeUsageCacheState;
+  [CLAUDE_CACHE_KEY]?: ClaudeUsageCacheState;
 }
 
 const DEFAULT_FETCH_TIMEOUT_MS = 12_000;
@@ -554,12 +560,12 @@ function staleCachedUsage(cached: UsageData, warning: string, nowMs = Date.now()
 }
 
 function readClaudeCacheState(cacheFile = DEFAULT_USAGE_CACHE_FILE): ClaudeUsageCacheState {
-  return readUsageCache(cacheFile).claude ?? {};
+  return readUsageCache(cacheFile)[CLAUDE_CACHE_KEY] ?? {};
 }
 
 function writeClaudeCacheState(state: ClaudeUsageCacheState, cacheFile = DEFAULT_USAGE_CACHE_FILE): boolean {
   const cache = readUsageCache(cacheFile);
-  cache.claude = state;
+  cache[CLAUDE_CACHE_KEY] = state;
   return writeUsageCache(cache, cacheFile);
 }
 
