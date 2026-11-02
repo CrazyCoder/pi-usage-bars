@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.3] - 2026-11-01
+
 ### Added
 
 - Quota bars now show the amounts behind the percentage when the provider
