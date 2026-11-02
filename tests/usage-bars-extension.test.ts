@@ -648,6 +648,25 @@ describe("usage-bars extension lifecycle", () => {
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
 
+  it("shows only the weekly Claude lane when the plan has no five-hour window", async () => {
+    const fetchFn = (async () => new Response(JSON.stringify({
+      five_hour: null,
+      seven_day: { utilization: 65, resets_at: new Date(Date.now() + 2 * 86_400_000).toISOString() },
+    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as FetchLike;
+
+    const harness = createHarness({ fetchFn });
+    const mock = createContext("tui", "anthropic", { configured: true, source: "OAuth", token: "oauth-token" });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    const status = mock.statuses.at(-1) ?? "";
+    expect(status).toStartWith("Claude W ");
+    expect(status).toContain("65%");
+    expect(status).not.toContain("5h ");
+    expect(status).not.toContain("S ");
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
   it("does not show another key's gateway usage after switching routes", async () => {
     const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const modelKey = new Headers(init?.headers).get("authorization") === "Bearer model-key";

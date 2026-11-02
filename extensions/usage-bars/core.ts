@@ -659,10 +659,14 @@ async function fetchClaudeUsageAttempt(
   }
 
   const data = result.data as any;
+  // Plans without a five-hour limit report `five_hour: null`; show only the
+  // weekly lane rather than an empty session bar.
+  const fiveHour = data?.five_hour;
   const usage: UsageData = hydrateUsageResets({
-    session: readPercentCandidate(data?.five_hour?.utilization) ?? 0,
+    session: readPercentCandidate(fiveHour?.utilization) ?? 0,
     weekly: readPercentCandidate(data?.seven_day?.utilization) ?? 0,
-    sessionResetsAt: typeof data?.five_hour?.resets_at === "string" ? data.five_hour.resets_at : undefined,
+    ...(fiveHour ? {} : { sessionHidden: true }),
+    sessionResetsAt: typeof fiveHour?.resets_at === "string" ? fiveHour.resets_at : undefined,
     weeklyResetsAt: typeof data?.seven_day?.resets_at === "string" ? data.seven_day.resets_at : undefined,
     fetchedAt: nowMs,
   }, nowMs);

@@ -709,6 +709,18 @@ describe("provider fetchers", () => {
     expect(usage).toMatchObject({ session: 55, weekly: 22, extraSpend: 7.5, extraLimit: 20 });
   });
 
+  it("hides the Claude session lane when the plan has no five-hour window", async () => {
+    const usage = await fetchClaudeUsage("token", {
+      fetchFn: async () => jsonResponse(200, {
+        five_hour: null,
+        seven_day: { utilization: 65, resets_at: "2026-02-19T13:00:00.000Z" },
+      }),
+    });
+    expect(usage).toMatchObject({ session: 0, weekly: 65, sessionHidden: true });
+    expect(usage.sessionResetsAt).toBeUndefined();
+    expect(usage.weeklyHidden).toBeUndefined();
+  });
+
   it("returns stale cached Claude usage during a 429 cooldown", async () => {
     const cacheFile = tempFile("claude-cache.json");
     const first = await fetchClaudeUsageWithFallback("token", {

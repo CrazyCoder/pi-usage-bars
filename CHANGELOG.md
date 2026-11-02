@@ -37,6 +37,9 @@
 
 ### Fixed
 
+- Hide the Claude session lane when the usage endpoint reports
+  `five_hour: null`, as it now does for plans without a five-hour limit. The
+  footer and `/usage` show only the weekly window instead of an empty 0% bar.
 - Recognize `openai` ChatGPT OAuth with a neutral plan indicator and a usage
   settings link. Do not send its token to the incompatible legacy Codex quota
   endpoint or show subscription indicators for API-key accounts.
