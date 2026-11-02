@@ -227,8 +227,8 @@ export function buildCentralUsage(
       ? formatDuration(Math.max(0, limit.refillNext - nowMs) / 1000)
       : undefined,
     weeklyResetsIn: timeUntilLocalMidnight(nowMs),
-    sessionQuota: { used: limit.used, limit: limit.limit, unit: "USD", label: "Monthly" },
-    weeklyQuota: { used: dailySpent, limit: dailyLimit, unit: "USD", label: "Today" },
+    sessionQuota: { used: limit.used, limit: limit.limit, unit: "USD" },
+    weeklyQuota: { used: dailySpent, limit: dailyLimit, unit: "USD" },
     fetchedAt: nowMs,
   };
 }

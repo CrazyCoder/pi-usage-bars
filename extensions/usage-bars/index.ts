@@ -29,7 +29,7 @@ import {
   openaiQuotaLink,
   clampPercent,
   colorForPercent,
-  detectProvider,
+  detectProviderRoute,
   fetchAllUsages,
   fetchBasetenUsage,
   fetchClaudeUsageWithFallback,
@@ -43,14 +43,18 @@ import {
   fetchVercelCredits,
   fetchXaiUsage,
   fetchZaiUsage,
+  formatFinancialAmount,
+  formatPercent,
+  formatQuota,
   providerToPiProviderId,
   resolveUsageEndpoints,
   type AccountBalance,
-  type AccountQuota,
   type AuthenticatedProviderKey,
   type AccountSpend,
+  type FetchLike,
   type ProviderKey,
   type UsageByProvider,
+  type UsageCredentialSource,
   type UsageData,
   type UsageTokens,
   XAI_MANAGEMENT_PROVIDER_ID,
@@ -106,44 +110,8 @@ const PROVIDER_LABELS: Record<ProviderKey, string> = {
   xai: "xAI",
 };
 
-function formatFinancialAmount(amount: number, unit: string): string {
-  if (/^[A-Z]{3}$/.test(unit)) {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: unit,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 5,
-    }).format(amount);
-  }
-  const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(amount);
-  return `${formatted} ${unit}`;
-}
-
 function formatAccountBalance(balance: AccountBalance): string {
   return `${balance.label} · ${formatFinancialAmount(balance.amount, balance.unit)}`;
-}
-
-function formatCompactFinancialAmount(amount: number, unit: string): string {
-  if (/^[A-Z]{3}$/.test(unit)) {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: unit,
-      notation: "compact",
-      maximumFractionDigits: 2,
-    }).format(amount);
-  }
-  return `${new Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 2 }).format(amount)} ${unit}`;
-}
-
-function formatAccountQuota(quota: AccountQuota, compact = false): string {
-  const format = compact ? formatCompactFinancialAmount : formatFinancialAmount;
-  const amounts = `${format(quota.used, quota.unit)} / ${format(quota.limit, quota.unit)}`;
-  return compact ? amounts : `${quota.label} · ${amounts}`;
-}
-
-function formatPercent(value: number): string {
-  const percent = Math.max(0, Math.min(100, value));
-  return percent > 0 && percent < 1 ? "<1%" : `${Math.round(percent)}%`;
 }
 
 function formatAccountSpend(spend: AccountSpend): string {
@@ -349,23 +317,21 @@ class UsageSelectorComponent extends Container implements Focusable {
 
       if (!item.data.quotaHidden) {
         if (!item.data.sessionHidden) {
-          const amount = item.data.sessionQuota
-            ? theme.fg("dim", `  ${formatAccountQuota(item.data.sessionQuota, true)}`)
-            : "";
           this.listContainer.addChild(new Text(
             indent + theme.fg("muted", sessionLabel) + this.renderBar(session) + " " +
-              theme.fg(colorForPercent(session), formatPercent(item.data.session).padStart(4)) + amount + sessionReset,
+              theme.fg(colorForPercent(session), formatPercent(item.data.session).padStart(4)) +
+              (item.data.sessionQuota ? theme.fg("muted", `  ${formatQuota(item.data.sessionQuota)}`) : "") +
+              sessionReset,
             0,
             0,
           ));
         }
         if (!item.data.weeklyHidden) {
-          const amount = item.data.weeklyQuota
-            ? theme.fg("dim", `  ${formatAccountQuota(item.data.weeklyQuota, true)}`)
-            : "";
           this.listContainer.addChild(new Text(
             indent + theme.fg("muted", weeklyLabel) + this.renderBar(weekly) + " " +
-              theme.fg(colorForPercent(weekly), formatPercent(item.data.weekly).padStart(4)) + amount + weeklyReset,
+              theme.fg(colorForPercent(weekly), formatPercent(item.data.weekly).padStart(4)) +
+              (item.data.weeklyQuota ? theme.fg("muted", `  ${formatQuota(item.data.weeklyQuota)}`) : "") +
+              weeklyReset,
             0,
             0,
           ));
@@ -507,10 +473,20 @@ class UsageSelectorComponent extends Container implements Focusable {
 
 interface UsageState extends UsageByProvider {
   activeProvider: ProviderKey | null;
+  activeCredential: UsageCredentialSource;
+  activeModel: ExtensionContext["model"];
   available: Partial<Record<ProviderKey, boolean>>;
+  // The credential that produced each provider's footer data, so data fetched
+  // with one key is never shown for a route that uses another.
+  dataCredential: Partial<Record<ProviderKey, string>>;
 }
 
+// Optional seams for tests and embedders. Pi calls the extension with the API
+// only, so every dependency falls back to the real implementation.
 export interface UsageBarsDependencies {
+  fetchFn?: FetchLike;
+  env?: NodeJS.ProcessEnv;
+  cacheFile?: string;
   getOpenaiQuotaLink(): unknown;
   centralConfigPath: string;
   fetchCentralUsage(options?: CentralUsageOptions): Promise<UsageData>;
@@ -553,7 +529,8 @@ export default function (
     default: false,
   });
 
-  const endpoints = resolveUsageEndpoints();
+  const endpoints = resolveUsageEndpoints(dependencies.env);
+  const requestConfig = { endpoints, fetchFn: dependencies.fetchFn, cacheFile: dependencies.cacheFile };
   const state: UsageState = {
     central: null,
     openai: null,
@@ -573,7 +550,10 @@ export default function (
     fireworks: null,
     xai: null,
     activeProvider: null,
+    activeCredential: "provider",
+    activeModel: undefined,
     available: {},
+    dataCredential: {},
   };
 
   let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -583,8 +563,9 @@ export default function (
   let sessionController: AbortController | undefined;
   let providerPollController: AbortController | undefined;
 
-  const renderPercent = (theme: Theme, value: number) =>
-    theme.fg(colorForPercent(value), formatPercent(value));
+  const renderPercent = (theme: Theme, value: number) => {
+    return theme.fg(colorForPercent(clampPercent(value)), formatPercent(value));
+  };
 
   const renderBar = (theme: Theme, value: number) => {
     const percent = clampPercent(value);
@@ -598,12 +579,14 @@ export default function (
     const ctx = currentContext;
     if (!ctx || ctx.mode !== "tui") return;
     const provider = state.activeProvider;
-    if (!provider || state.available[provider] === false) {
+    const current = provider !== null &&
+      state.dataCredential[provider] === credentialKey(state.activeCredential, state.activeModel);
+    if (!provider || (current && state.available[provider] === false)) {
       ctx.ui.setStatus(STATUS_KEY, undefined);
       return;
     }
 
-    const data = state[provider];
+    const data = current ? state[provider] : null;
     const theme = ctx.ui.theme;
     const label = PROVIDER_LABELS[provider];
     if (!data) {
@@ -649,7 +632,7 @@ export default function (
     if (!data.sessionHidden) {
       quotaLanes.push(
         theme.fg("muted", sessionPrefix) + renderBar(theme, session) + " " + renderPercent(theme, data.session) +
-          (data.sessionQuota ? theme.fg("muted", ` ${formatAccountQuota(data.sessionQuota, true)}`) : "") +
+          (data.sessionQuota ? theme.fg("muted", ` ${formatQuota(data.sessionQuota, true)}`) : "") +
           (data.sessionResetsIn ? theme.fg("dim", ` ⟳ ${data.sessionResetsIn}`) : ""),
       );
     }
@@ -657,7 +640,7 @@ export default function (
       const weeklyPrefix = data.weeklyLabel === "Today" ? "D " : "W ";
       quotaLanes.push(
         theme.fg("muted", weeklyPrefix) + renderBar(theme, weekly) + " " + renderPercent(theme, data.weekly) +
-          (data.weeklyQuota ? theme.fg("muted", ` ${formatAccountQuota(data.weeklyQuota, true)}`) : "") +
+          (data.weeklyQuota ? theme.fg("muted", ` ${formatQuota(data.weeklyQuota, true)}`) : "") +
           (data.weeklyResetsIn ? theme.fg("dim", ` ⟳ ${data.weeklyResetsIn}`) : ""),
       );
     }
@@ -673,10 +656,18 @@ export default function (
     ctx.ui.setStatus(STATUS_KEY, status);
   }
 
+  function credentialKey(credential: UsageCredentialSource, model: ExtensionContext["model"]): string {
+    return credential === "model" ? `model:${model?.provider ?? ""}/${model?.id ?? ""}` : "provider";
+  }
+
   function updateProviderFrom(model: ExtensionContext["model"]): boolean {
-    const previous = state.activeProvider;
-    state.activeProvider = detectProvider(model);
-    if (previous !== state.activeProvider) {
+    const previousProvider = state.activeProvider;
+    const previousKey = credentialKey(state.activeCredential, state.activeModel);
+    const route = detectProviderRoute(model);
+    state.activeProvider = route?.provider ?? null;
+    state.activeCredential = route?.credential ?? "provider";
+    state.activeModel = model;
+    if (previousProvider !== state.activeProvider || previousKey !== credentialKey(state.activeCredential, model)) {
       providerPollController?.abort();
       updateStatus();
       return true;
@@ -685,8 +676,8 @@ export default function (
   }
 
   function isSubscriptionAuth(source: string | undefined): boolean {
-    // Pi 0.84 exposes AuthResult.source as a human-readable label rather than a
-    // credential-type discriminator. Keep the compatibility assumption in one
+    // Pi exposes AuthResult.source as a human-readable label rather than a
+    // credential-type discriminator. Keep this source-label assumption in one
     // place until ModelRegistry exposes the resolved credential type directly.
     return source === "OAuth";
   }
@@ -733,7 +724,7 @@ export default function (
         throw new Error("quota account link changed; confirm and relink the OpenAI and Codex logins");
       }
       if (signal.aborted) throw new DOMException("Aborted", "AbortError");
-      const usage = cached ? cached.usage : await fetchCodexUsage(codex.token, { signal });
+      const usage = cached ? cached.usage : await fetchCodexUsage(codex.token, { ...requestConfig, signal });
       if (!usage) throw new Error("linked Codex quota unavailable");
       return { ...usage, notice: "Shared plan via linked Codex account. Pi app cap not included. https://chatgpt.com/settings/usage" };
     } catch (error) {
@@ -741,56 +732,80 @@ export default function (
     }
   }
 
+  async function resolveModelCredential(
+    ctx: ExtensionContext,
+    model: ExtensionContext["model"],
+  ): Promise<CredentialResolution> {
+    if (!model) return {};
+    try {
+      const resolved = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+      if (!resolved.ok) return { error: resolved.error };
+      if (resolved.apiKey) return { token: resolved.apiKey };
+      const authorization = resolved.headers?.Authorization ?? resolved.headers?.authorization;
+      if (typeof authorization === "string" && authorization.startsWith("Bearer ")) {
+        return { token: authorization.slice("Bearer ".length) };
+      }
+      return {};
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  function fetchUsageWithToken(provider: Exclude<AuthenticatedProviderKey, "openai">, token: string, signal: AbortSignal): Promise<UsageData> {
+    const config = { ...requestConfig, signal };
+    switch (provider) {
+      case "codex": return fetchCodexUsage(token, config);
+      case "claude": return fetchClaudeUsageWithFallback(token, config);
+      case "zai": return fetchZaiUsage(token, "zai", config);
+      case "zai-cn": return fetchZaiUsage(token, "zai-cn", config);
+      case "kimi": return fetchKimiUsage(token, config);
+      case "minimax": return fetchMiniMaxUsage(token, "minimax", config);
+      case "minimax-cn": return fetchMiniMaxUsage(token, "minimax-cn", config);
+      case "openrouter": return fetchOpenRouterUsage(token, config);
+      case "deepseek": return fetchDeepSeekBalance(token, config);
+      case "moonshot": return fetchMoonshotBalance(token, "moonshot", config);
+      case "moonshot-cn": return fetchMoonshotBalance(token, "moonshot-cn", config);
+      case "baseten": return fetchBasetenUsage(token, config);
+      case "vercel": return fetchVercelCredits(token, config);
+      case "fireworks": return fetchFireworksUsage(token, config);
+      case "xai": return fetchXaiUsage(token, config);
+    }
+  }
+
   async function fetchProvider(
     ctx: ExtensionContext,
     provider: ProviderKey,
     signal: AbortSignal,
+    credentialSource: UsageCredentialSource = "provider",
   ): Promise<void> {
+    const model = state.activeModel;
     if (provider === "central") {
+      const data = await dependencies.fetchCentralUsage({ signal });
+      if (signal.aborted) return;
+      state.central = data;
       state.available.central = true;
-      state.central = await dependencies.fetchCentralUsage({ signal });
+      state.dataCredential.central = credentialKey(credentialSource, model);
       return;
     }
-    const credential = await resolveCredential(ctx, provider);
+    const credential = credentialSource === "model"
+      ? await resolveModelCredential(ctx, model)
+      : await resolveCredential(ctx, provider);
     if (signal.aborted) return;
-    state.available[provider] = Boolean(credential.token || credential.error);
-    if (credential.error) {
-      state[provider] = { session: 0, weekly: 0, error: `auth resolution failed (${credential.error})` };
-      return;
-    }
-    if (!credential.token) {
-      state[provider] = null;
-      return;
-    }
 
-    if (provider === "openai") state.openai = await fetchOpenaiUsage(ctx, credential.token, signal);
-    if (provider === "codex") state.codex = await fetchCodexUsage(credential.token, { signal });
-    if (provider === "claude") state.claude = await fetchClaudeUsageWithFallback(credential.token, { signal });
-    if (provider === "zai") state.zai = await fetchZaiUsage(credential.token, "zai", { endpoints, signal });
-    if (provider === "zai-cn") state["zai-cn"] = await fetchZaiUsage(credential.token, "zai-cn", { endpoints, signal });
-    if (provider === "kimi") state.kimi = await fetchKimiUsage(credential.token, { endpoints, signal });
-    if (provider === "minimax") {
-      state.minimax = await fetchMiniMaxUsage(credential.token, "minimax", { endpoints, signal });
+    let data: UsageData | null = null;
+    if (credential.error) {
+      data = { session: 0, weekly: 0, error: `auth resolution failed (${credential.error})` };
+    } else if (credential.token) {
+      data = provider === "openai"
+        ? await fetchOpenaiUsage(ctx, credential.token, signal)
+        : await fetchUsageWithToken(provider, credential.token, signal);
+      if (signal.aborted) return;
     }
-    if (provider === "minimax-cn") {
-      state["minimax-cn"] = await fetchMiniMaxUsage(credential.token, "minimax-cn", { endpoints, signal });
-    }
-    if (provider === "openrouter") {
-      state.openrouter = await fetchOpenRouterUsage(credential.token, { endpoints, signal });
-    }
-    if (provider === "deepseek") {
-      state.deepseek = await fetchDeepSeekBalance(credential.token, { endpoints, signal });
-    }
-    if (provider === "moonshot") {
-      state.moonshot = await fetchMoonshotBalance(credential.token, "moonshot", { endpoints, signal });
-    }
-    if (provider === "moonshot-cn") {
-      state["moonshot-cn"] = await fetchMoonshotBalance(credential.token, "moonshot-cn", { endpoints, signal });
-    }
-    if (provider === "baseten") state.baseten = await fetchBasetenUsage(credential.token, { endpoints, signal });
-    if (provider === "vercel") state.vercel = await fetchVercelCredits(credential.token, { endpoints, signal });
-    if (provider === "fireworks") state.fireworks = await fetchFireworksUsage(credential.token, { endpoints, signal });
-    if (provider === "xai") state.xai = await fetchXaiUsage(credential.token, { endpoints, signal });
+    // Commit the data together with the credential that produced it, so a
+    // fetch for a previous route can never be shown for the current one.
+    state[provider] = data;
+    state.available[provider] = Boolean(credential.token || credential.error);
+    state.dataCredential[provider] = credentialKey(credentialSource, model);
   }
 
   async function runPoll(): Promise<void> {
@@ -806,7 +821,7 @@ export default function (
     providerPollController = controller;
     const signal = AbortSignal.any([sessionSignal, controller.signal]);
     try {
-      await fetchProvider(ctx, provider, signal);
+      await fetchProvider(ctx, provider, signal, state.activeCredential);
       if (signal.aborted) return;
       const data = state[provider];
       if (data && !data.error) pi.events.emit(USAGE_UPDATE_EVENT, { provider, ...data });
@@ -843,7 +858,7 @@ export default function (
     }
 
     const [results, central] = await Promise.all([
-      fetchAllUsages(tokens, { endpoints, signal }),
+      fetchAllUsages(tokens, { ...requestConfig, signal }),
       state.activeProvider === "central" ? dependencies.fetchCentralUsage({ signal }) : null,
     ]);
     results.central = central;
@@ -874,7 +889,7 @@ export default function (
       if (!provider) {
         console.log(JSON.stringify({ extension: EXTENSION_ID, status: "unsupported", provider: ctx.model?.provider }));
       } else {
-        await fetchProvider(ctx, provider, sessionController.signal);
+        await fetchProvider(ctx, provider, sessionController.signal, state.activeCredential);
         const data = state[provider];
         console.log(JSON.stringify({
           extension: EXTENSION_ID,

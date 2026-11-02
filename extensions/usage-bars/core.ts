@@ -54,23 +54,24 @@ export interface AccountSpend {
   lifetime?: number;
 }
 
+// Used and allowed amounts behind a quota bar. A three-letter unit is an ISO
+// currency code; no unit means a count the provider does not label.
 export interface AccountQuota {
   used: number;
   limit: number;
-  unit: string;
-  label: string;
+  unit?: string;
 }
 
 export interface UsageData {
   session: number;
   weekly: number;
+  sessionQuota?: AccountQuota;
+  weeklyQuota?: AccountQuota;
   quotaHidden?: boolean;
   accountBalance?: AccountBalance;
   accountBalanceDetails?: AccountBalance[];
   accountUsage?: AccountBalance;
   accountSpend?: AccountSpend;
-  sessionQuota?: AccountQuota;
-  weeklyQuota?: AccountQuota;
   sessionResetsIn?: string;
   weeklyResetsIn?: string;
   sessionResetsAt?: string;
@@ -526,6 +527,8 @@ function snapshotUsage(usage: UsageData, nowMs = Date.now()): UsageData {
   return {
     session: usage.session,
     weekly: usage.weekly,
+    sessionQuota: usage.sessionQuota,
+    weeklyQuota: usage.weeklyQuota,
     quotaHidden: usage.quotaHidden,
     accountBalance: usage.accountBalance,
     accountBalanceDetails: usage.accountBalanceDetails,
@@ -749,6 +752,19 @@ function usedPercentFromCounts(
   return null;
 }
 
+function quotaFromCounts(
+  value: Record<string, unknown> | null | undefined,
+  options: { used?: string; total?: string; remaining?: string } = {},
+): AccountQuota | undefined {
+  if (!value) return undefined;
+  const total = readNumber(value[options.total ?? "limit"]);
+  if (total === null || total <= 0) return undefined;
+  const used = readNumber(value[options.used ?? "used"]);
+  const remaining = readNumber(value[options.remaining ?? "remaining"]);
+  const amount = used ?? (remaining === null ? null : total - remaining);
+  return amount === null ? undefined : { used: Math.max(0, amount), limit: total };
+}
+
 function normalizeIsoDate(value: unknown): string | undefined {
   if (typeof value !== "string" || !value.trim()) return undefined;
   const normalized = value.trim().replace(/(\.\d{3})\d+(?=Z|[+-]\d\d:\d\d$)/, "$1");
@@ -798,6 +814,8 @@ export function extractKimiUsageFromPayload(payload: unknown, nowMs = Date.now()
   const weeklyReset = normalizeIsoDate(usage?.resetTime ?? usage?.reset_at ?? usage?.reset_time);
   return hydrateUsageResets({
     ...normalizeUsagePair(session, weekly),
+    sessionQuota: quotaFromCounts(sessionDetail),
+    weeklyQuota: quotaFromCounts(usage),
     sessionLabel: "5-hour",
     weeklyLabel: "Weekly",
     sessionResetsAt: sessionReset,
@@ -824,6 +842,7 @@ export async function fetchKimiUsage(token: string, config: FetchConfig = {}): P
 interface MiniMaxWindow {
   percent: number;
   resetsAt?: string;
+  quota?: AccountQuota;
 }
 
 function pickHighestWindow(windows: MiniMaxWindow[]): MiniMaxWindow | undefined {
@@ -874,7 +893,8 @@ export function extractMiniMaxUsageFromPayload(payload: unknown, nowMs = Date.no
       if (percent === null) continue;
       const windowType = String(service.window_type ?? service.windowType ?? "").toLowerCase();
       const resetsAt = normalizeIsoDate(service.resets_at ?? service.reset_time ?? service.end_time);
-      (windowType.includes("week") ? weeklyWindows : intervalWindows).push({ percent, resetsAt });
+      const quota = quotaFromCounts(service, { total: "limit", used: "usage" });
+      (windowType.includes("week") ? weeklyWindows : intervalWindows).push({ percent, resetsAt, quota });
     }
   }
 
@@ -906,7 +926,11 @@ export function extractMiniMaxUsageFromPayload(payload: unknown, nowMs = Date.no
         remaining: "current_interval_usage_count",
       });
       if (interval !== null) {
-        intervalWindows.push({ percent: interval, resetsAt: miniMaxResetAt(model, "current", nowMs) });
+        intervalWindows.push({
+          percent: interval,
+          resetsAt: miniMaxResetAt(model, "current", nowMs),
+          quota: quotaFromCounts(model, { total: "current_interval_total_count", remaining: "current_interval_usage_count" }),
+        });
       }
       const weekly = unavailable("weekly") ? null : usedPercentFromCounts(model, {
         remainingPercent: "current_weekly_remaining_percent",
@@ -914,7 +938,11 @@ export function extractMiniMaxUsageFromPayload(payload: unknown, nowMs = Date.no
         remaining: "current_weekly_usage_count",
       });
       if (weekly !== null) {
-        weeklyWindows.push({ percent: weekly, resetsAt: miniMaxResetAt(model, "weekly", nowMs) });
+        weeklyWindows.push({
+          percent: weekly,
+          resetsAt: miniMaxResetAt(model, "weekly", nowMs),
+          quota: quotaFromCounts(model, { total: "current_weekly_total_count", remaining: "current_weekly_usage_count" }),
+        });
       }
     }
   }
@@ -930,6 +958,8 @@ export function extractMiniMaxUsageFromPayload(payload: unknown, nowMs = Date.no
     session: Number(session.percent.toFixed(2)),
     accountBalance,
     weekly: Number((weekly?.percent ?? 0).toFixed(2)),
+    sessionQuota: session.quota,
+    weeklyQuota: weekly?.quota,
     sessionLabel: "Interval",
     weeklyLabel: "Weekly",
     weeklyHidden: !weekly,
@@ -1055,6 +1085,7 @@ export function extractOpenRouterUsageFromPayloads(
     weekly: 0,
     quotaHidden: limitPercent === null,
     weeklyHidden: true,
+    sessionQuota: limitUsed !== null && limit !== null ? { used: limitUsed, limit, unit: "USD" } : undefined,
     sessionLabel: "Key limit",
     accountBalance,
     accountSpend,
@@ -1564,12 +1595,90 @@ export function isCentralModel(model: UsageModelRoute | string | undefined | nul
   }
 }
 
+// Inference hosts Pi 1.3 uses for each supported provider. A model whose
+// baseUrl points elsewhere (a proxy, LiteLLM, or another gateway) does not spend
+// that provider's quota, so the footer shows no bar instead of a wrong one,
+// unless the host is a supported gateway.
+const PROVIDER_HOSTS: Record<AuthenticatedProviderKey, readonly string[]> = {
+  openai: ["api.openai.com"],
+  codex: ["chatgpt.com"],
+  claude: ["api.anthropic.com"],
+  zai: ["api.z.ai"],
+  "zai-cn": ["open.bigmodel.cn"],
+  kimi: ["api.kimi.com"],
+  minimax: ["api.minimax.io"],
+  "minimax-cn": ["api.minimaxi.com"],
+  openrouter: ["openrouter.ai"],
+  deepseek: ["api.deepseek.com"],
+  moonshot: ["api.moonshot.ai"],
+  "moonshot-cn": ["api.moonshot.cn"],
+  baseten: ["inference.baseten.co"],
+  vercel: ["ai-gateway.vercel.sh"],
+  fireworks: ["api.fireworks.ai"],
+  xai: ["api.x.ai"],
+};
+
+// Providers that also serve documented regional subdomains, such as
+// us.openrouter.ai.
+const PROVIDER_HOST_SUFFIXES: Partial<Record<AuthenticatedProviderKey, string>> = {
+  openrouter: ".openrouter.ai",
+};
+
+// Gateways whose usage belongs to the key a model sends them, whatever Pi
+// provider ID the model is registered under.
+const GATEWAY_PROVIDERS: readonly AuthenticatedProviderKey[] = ["openrouter", "vercel"];
+
+// Where usage for the active model comes from. "provider" uses the credential
+// configured for the provider's own Pi provider ID; "model" uses the credential
+// Pi sends with the model itself, because the model reaches a gateway under
+// another provider ID.
+export type UsageCredentialSource = "provider" | "model";
+
+export interface ProviderRoute {
+  provider: ProviderKey;
+  credential: UsageCredentialSource;
+}
+
+function routeHost(baseUrl: string | undefined): string | undefined {
+  if (typeof baseUrl !== "string" || !baseUrl.trim()) return undefined;
+  try {
+    return new URL(baseUrl.trim()).hostname.replace(/\.$/, "");
+  } catch {
+    return undefined;
+  }
+}
+
+function isProviderHost(provider: AuthenticatedProviderKey, host: string): boolean {
+  if (PROVIDER_HOSTS[provider].includes(host)) return true;
+  const suffix = PROVIDER_HOST_SUFFIXES[provider];
+  return suffix !== undefined && host.endsWith(suffix);
+}
+
+export function isProviderRoute(provider: AuthenticatedProviderKey, baseUrl: string | undefined): boolean {
+  const host = routeHost(baseUrl);
+  return host === undefined || isProviderHost(provider, host);
+}
+
+export function detectProviderRoute(
+  model: UsageModelRoute | string | undefined | null,
+): ProviderRoute | null {
+  if (!model || typeof model === "string") return null;
+  if (isCentralModel(model)) return { provider: "central", credential: "provider" };
+  const provider = providerFromId(model.provider);
+  if (provider && isProviderRoute(provider, model.baseUrl)) return { provider, credential: "provider" };
+  const host = routeHost(model.baseUrl);
+  const gateway = host === undefined ? undefined : GATEWAY_PROVIDERS.find((candidate) => isProviderHost(candidate, host));
+  return gateway ? { provider: gateway, credential: "model" } : null;
+}
+
 export function detectProvider(
   model: UsageModelRoute | string | undefined | null,
 ): ProviderKey | null {
-  if (!model || typeof model === "string") return null;
-  if (isCentralModel(model)) return "central";
-  switch ((model.provider || "").toLowerCase()) {
+  return detectProviderRoute(model)?.provider ?? null;
+}
+
+function providerFromId(providerId: string | undefined): AuthenticatedProviderKey | null {
+  switch ((providerId || "").toLowerCase()) {
     case "openai": return "openai";
     case "openai-codex": return "codex";
     case "anthropic": return "claude";
@@ -1614,6 +1723,48 @@ export function providerToPiProviderId(provider: AuthenticatedProviderKey): PiPr
 export function clampPercent(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+export function formatPercent(value: number): string {
+  if (Number.isFinite(value) && value > 0 && value < 0.5) return "<1%";
+  return `${clampPercent(value)}%`;
+}
+
+export function formatFinancialAmount(amount: number, unit: string): string {
+  if (/^[A-Z]{3}$/.test(unit)) {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency: unit,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 5,
+    }).format(amount);
+  }
+  const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(amount);
+  return `${formatted} ${unit}`;
+}
+
+function formatQuotaAmount(amount: number, unit: string | undefined, compact: boolean): string {
+  const currency = unit !== undefined && /^[A-Z]{3}$/.test(unit) ? unit : undefined;
+  if (!compact) {
+    if (currency) return formatFinancialAmount(amount, currency);
+    const formatted = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(amount);
+    return unit ? `${formatted} ${unit}` : formatted;
+  }
+  const options: Intl.NumberFormatOptions = Math.abs(amount) >= 10_000
+    ? { notation: "compact", maximumFractionDigits: 1 }
+    : { maximumFractionDigits: 2 };
+  if (currency) {
+    return new Intl.NumberFormat("en-US", { ...options, style: "currency", currency, minimumFractionDigits: 0 })
+      .format(amount);
+  }
+  const formatted = new Intl.NumberFormat("en-US", options).format(amount);
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+export function formatQuota(quota: AccountQuota, compact = false): string {
+  const separator = compact ? "/" : " / ";
+  return formatQuotaAmount(quota.used, quota.unit, compact) + separator +
+    formatQuotaAmount(quota.limit, quota.unit, compact);
 }
 
 export function colorForPercent(value: number): "success" | "warning" | "error" {

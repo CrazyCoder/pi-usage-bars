@@ -70,9 +70,10 @@ key is not valid.
 
 OpenRouter shows the account credit balance and current daily, weekly, and
 monthly key spend. If the API key has a configured credit limit, that limit is
-also rendered as a usage bar. Baseten shows current calendar-month credits used,
-aggregated across its documented dedicated, training, and Model APIs billing
-categories; it does not invent a remaining-balance or quota percentage.
+also rendered as a usage bar with the amount used and the limit, for example
+`75% $15/$20`. Baseten shows current calendar-month credits used, aggregated
+across its documented dedicated, training, and Model APIs billing categories; it
+does not invent a remaining-balance or quota percentage.
 
 Vercel AI Gateway shows the team's remaining AI Gateway Credits balance and
 lifetime spend. Fireworks shows account-wide rated spend for the current UTC
@@ -90,11 +91,15 @@ to check the console rather than a fabricated percentage. The extension does not
 import browser cookies.
 
 Google Gemini CLI and Google Antigravity are not supported because Pi removed
-those built-in providers in version 0.71.0.
+those built-in providers in version 0.71.0. Pi 1.3.0 also adds the TypeSafe
+classifier, which is not an active chat model monitored by the footer. The
+reviewed TypeSafe and Xiaomi MiMo documentation does not describe a
+key-authenticated account-usage endpoint, so neither is currently supported; see
+[provider support research](docs/provider-research.md).
 
 ## Requirements
 
-- Pi 0.84.2 or newer (tested with the current Pi 0.87.1 release)
+- Pi 0.84.2 or newer (tested with Pi 1.3.0)
 - Node.js 22.19 or newer when using the npm-distributed Pi CLI
 - JetBrains Central CLI on `PATH` to show Central usage for a routed model
 
@@ -157,6 +162,27 @@ provider's direct subscription quota.
 
 ![Claude footer bar](https://raw.githubusercontent.com/CrazyCoder/pi-usage-bars/main/assets/claude.png)
 
+When a provider reports the amounts behind a quota window, the footer and
+`/usage` show them next to the percentage: the OpenRouter key limit in the
+reported currency (`$15/$20`), and Kimi and MiniMax windows as plain counts
+(`50/200`). Kimi and MiniMax do not document what those counts measure, so they
+carry no unit. The footer abbreviates amounts from 10,000 upward (`12.5K`);
+`/usage` shows them in full.
+
+The footer only shows a provider's quota when the model actually calls that
+provider. If `models.json` points a supported provider at another host, such as
+a local proxy or LiteLLM, the footer stays empty instead of showing a quota that
+the request does not spend. OpenRouter regional hosts such as `us.openrouter.ai`
+count as OpenRouter.
+
+A model routed to OpenRouter (`openrouter.ai`, `*.openrouter.ai`) or Vercel AI
+Gateway (`ai-gateway.vercel.sh`) under any other provider ID shows that
+gateway's usage instead. The footer then queries the gateway with the key Pi
+sends for that model, not the key configured for the `openrouter` or
+`vercel-ai-gateway` provider, so it reports the account the model actually
+spends. `/usage` still lists every configured account with its provider
+credentials.
+
 Usage refresh runs in interactive TUI sessions every two minutes. It does not
 run in print, JSON, or RPC mode. Run `/central-quota` to refresh a
 Central-routed model immediately.
@@ -207,7 +233,8 @@ pi --no-extensions -e C:\hk\code\pi-usage-bars\extensions\usage-bars\index.ts --
 ```
 
 The result has `status` set to `ok`, `unconfigured`, `unsupported`, or `error`.
-No credential is included in the output.
+A supported provider routed through another host reports `unsupported`, unless
+the host is a supported gateway. No credential is included in the output.
 
 ## Endpoint configuration
 

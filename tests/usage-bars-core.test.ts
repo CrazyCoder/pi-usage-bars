@@ -2,10 +2,12 @@ import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { getBuiltinModels, getBuiltinProviders } from "@earendil-works/pi-ai/providers/all";
 import {
   clampPercent,
   colorForPercent,
   detectProvider,
+  detectProviderRoute,
   extractBasetenUsageFromPayload,
   extractDeepSeekBalanceFromPayload,
   extractFireworksSpendFromPayload,
@@ -32,7 +34,10 @@ import {
   fetchXaiUsage,
   fetchZaiUsage,
   formatDuration,
+  formatPercent,
+  formatQuota,
   formatResetsAt,
+  isProviderRoute,
   parseRetryAfterMs,
   providerToPiProviderId,
   readLimitPercent,
@@ -126,6 +131,20 @@ describe("formatting and parsing", () => {
     expect(readLimitPercent({ utilization: 44 })).toBe(44);
     expect(readLimitPercent({ currentValue: 30, remaining: 70 })).toBe(30);
     expect(clampPercent(1000)).toBe(100);
+    expect(formatPercent(0)).toBe("0%");
+    expect(formatPercent(0.2)).toBe("<1%");
+    expect(formatPercent(0.6)).toBe("1%");
+    expect(formatPercent(42.4)).toBe("42%");
+    expect(formatPercent(150)).toBe("100%");
+    expect(formatPercent(Number.NaN)).toBe("0%");
+    expect(formatQuota({ used: 21, limit: 50, unit: "USD" })).toBe("$21.00 / $50.00");
+    expect(formatQuota({ used: 21, limit: 50, unit: "USD" }, true)).toBe("$21/$50");
+    expect(formatQuota({ used: 21.375, limit: 50, unit: "EUR" }, true)).toBe("€21.38/€50");
+    expect(formatQuota({ used: 12_500, limit: 50_000, unit: "USD" }, true)).toBe("$12.5K/$50K");
+    expect(formatQuota({ used: 512, limit: 2048 })).toBe("512 / 2,048");
+    expect(formatQuota({ used: 512, limit: 2048 }, true)).toBe("512/2,048");
+    expect(formatQuota({ used: 1_250_000, limit: 4_000_000 }, true)).toBe("1.3M/4M");
+    expect(formatQuota({ used: 3, limit: 10, unit: "credits" })).toBe("3 credits / 10 credits");
     expect(colorForPercent(69)).toBe("success");
     expect(colorForPercent(70)).toBe("warning");
     expect(colorForPercent(90)).toBe("error");
@@ -165,8 +184,8 @@ describe("JetBrains Central usage", () => {
       sessionLabel: "Monthly",
       weeklyLabel: "Today",
       sessionResetsIn: "2d",
-      sessionQuota: { used: 1250.5, limit: 5000, unit: "USD", label: "Monthly" },
-      weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
+      sessionQuota: { used: 1250.5, limit: 5000, unit: "USD" },
+      weeklyQuota: { used: 12.5, limit: 50, unit: "USD" },
       fetchedAt: now,
     });
   });
@@ -240,7 +259,7 @@ describe("JetBrains Central usage", () => {
     expect(first.weekly).toBe(0);
     expect(second).toMatchObject({
       weekly: 5,
-      weeklyQuota: { used: 2.5, limit: 50, unit: "USD", label: "Today" },
+      weeklyQuota: { used: 2.5, limit: 50, unit: "USD" },
     });
     expect(await fetchCentralUsage({ runLimit: async () => { throw new Error("central unavailable"); } }))
       .toMatchObject({ error: "central unavailable" });
@@ -253,9 +272,9 @@ describe("current Pi provider compatibility", () => {
   it("detects a model that calls the JetBrains AI Platform directly as Central", () => {
     expect(detectProvider({ provider: "xai", baseUrl: "https://api.jetbrains.ai/llm/xai/v1" })).toBe("central");
     expect(detectProvider({ provider: "xai", baseUrl: "https://api.stgn.jetbrains.ai/user/v5/llm/xai/v1" })).toBe("central");
-    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai/other/llm/anthropic" })).toBe("claude");
-    expect(detectProvider({ provider: "anthropic", baseUrl: "http://api.jetbrains.ai/llm/anthropic" })).toBe("claude");
-    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai.example.com/llm/anthropic" })).toBe("claude");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai/other/llm/anthropic" })).toBeNull();
+    expect(detectProvider({ provider: "anthropic", baseUrl: "http://api.jetbrains.ai/llm/anthropic" })).toBeNull();
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.jetbrains.ai.example.com/llm/anthropic" })).toBeNull();
   });
 
   it("detects supported current providers", () => {
@@ -287,6 +306,78 @@ describe("current Pi provider compatibility", () => {
     expect(detectProvider({ provider: "xai" })).toBe("xai");
     expect(detectProvider({ provider: "google-gemini-cli" })).toBeNull();
     expect(detectProvider({ provider: "google-antigravity" })).toBeNull();
+    expect(detectProvider({ provider: "typesafe" })).toBeNull();
+    expect(detectProvider({ provider: "xiaomi-token-plan-cn" })).toBeNull();
+  });
+
+  it("detects every built-in Pi model of a supported provider on its default route", () => {
+    const supported = [
+      "openai-codex",
+      "anthropic",
+      "zai",
+      "zai-coding-cn",
+      "kimi-coding",
+      "minimax",
+      "minimax-cn",
+      "openrouter",
+      "deepseek",
+      "moonshotai",
+      "moonshotai-cn",
+      "baseten",
+      "vercel-ai-gateway",
+      "fireworks",
+      "xai",
+    ] as const;
+    const builtin = getBuiltinProviders() as readonly string[];
+    for (const providerId of supported) {
+      expect(builtin).toContain(providerId);
+      const expected = detectProvider({ provider: providerId });
+      expect(expected).not.toBeNull();
+      const models = getBuiltinModels(providerId);
+      expect(models.length).toBeGreaterThan(0);
+      for (const model of models) {
+        expect(`${model.id} ${model.baseUrl} → ${detectProvider(model)}`)
+          .toBe(`${model.id} ${model.baseUrl} → ${expected}`);
+      }
+    }
+  });
+
+  it("ignores supported provider IDs routed through another host", () => {
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://api.anthropic.com" })).toBe("claude");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://API.Anthropic.com./v1" })).toBe("claude");
+    expect(detectProvider({ provider: "anthropic", baseUrl: "http://localhost:4000" })).toBeNull();
+    expect(detectProvider({ provider: "anthropic", baseUrl: "https://litellm.example.com/anthropic" })).toBeNull();
+    expect(detectProvider({ provider: "openai-codex", baseUrl: "https://proxy.example.com/backend-api" })).toBeNull();
+    expect(detectProvider({ provider: "zai", baseUrl: "https://api.z.ai.example.com/api/coding/paas/v4" })).toBeNull();
+  });
+
+  it("accepts documented OpenRouter regional endpoints only for OpenRouter", () => {
+    expect(detectProvider({ provider: "openrouter", baseUrl: "https://us.openrouter.ai/api/v1" })).toBe("openrouter");
+    expect(detectProvider({ provider: "openrouter", baseUrl: "https://evilopenrouter.ai/api/v1" })).toBeNull();
+  });
+
+  it("credits supported gateways with the model's own credential", () => {
+    expect(detectProviderRoute({ provider: "openrouter", baseUrl: "https://openrouter.ai/api/v1" }))
+      .toEqual({ provider: "openrouter", credential: "provider" });
+    expect(detectProviderRoute({ provider: "anthropic", baseUrl: "https://openrouter.ai/api" }))
+      .toEqual({ provider: "openrouter", credential: "model" });
+    expect(detectProviderRoute({ provider: "anthropic", baseUrl: "https://us.openrouter.ai/api/v1" }))
+      .toEqual({ provider: "openrouter", credential: "model" });
+    expect(detectProviderRoute({ provider: "my-gateway", baseUrl: "https://ai-gateway.vercel.sh" }))
+      .toEqual({ provider: "vercel", credential: "model" });
+    expect(detectProviderRoute({ provider: "openrouter", baseUrl: "https://ai-gateway.vercel.sh" }))
+      .toEqual({ provider: "vercel", credential: "model" });
+    expect(detectProviderRoute({ provider: "my-gateway", baseUrl: "https://evilopenrouter.ai/api/v1" })).toBeNull();
+    expect(detectProviderRoute({ provider: "my-gateway", baseUrl: "https://api.anthropic.com" })).toBeNull();
+    expect(detectProviderRoute({ provider: "my-gateway" })).toBeNull();
+  });
+
+  it("keeps provider-ID detection when the route is unknown", () => {
+    expect(isProviderRoute("claude", undefined)).toBe(true);
+    expect(isProviderRoute("claude", "")).toBe(true);
+    expect(isProviderRoute("claude", "   ")).toBe(true);
+    expect(isProviderRoute("claude", "not a url")).toBe(true);
+    expect(detectProvider({ provider: "anthropic", baseUrl: "" })).toBe("claude");
   });
 
   it("maps usage keys to Pi provider IDs", () => {
@@ -682,6 +773,8 @@ describe("provider fetchers", () => {
     expect(extractKimiUsageFromPayload(payload)).toMatchObject({
       session: 25,
       weekly: 25,
+      sessionQuota: { used: 50, limit: 200 },
+      weeklyQuota: { used: 512, limit: 2048 },
       sessionLabel: "5-hour",
       weeklyLabel: "Weekly",
     });
@@ -713,6 +806,9 @@ describe("provider fetchers", () => {
     expect(modelRemains).toMatchObject({
       session: 40,
       weekly: 25,
+      // usage_count is the remaining count, so used = total - usage_count.
+      sessionQuota: { used: 40, limit: 100 },
+      weeklyQuota: { used: 250, limit: 1000 },
       sessionLabel: "Interval",
       weeklyHidden: false,
       sessionResetsIn: "1h",
@@ -724,6 +820,12 @@ describe("provider fetchers", () => {
       { service_type: "standard", window_type: "weekly", percent: "45" },
       { service_type: "highspeed", window_type: "rolling", percent: 55 },
     ] } })).toMatchObject({ session: 55, weekly: 45, weeklyHidden: false });
+
+    const counted = extractMiniMaxUsageFromPayload({ data: { services: [
+      { service_type: "standard", window_type: "rolling", usage: 30, limit: 100 },
+    ] } });
+    expect(counted?.sessionQuota).toEqual({ used: 30, limit: 100 });
+    expect(counted?.weeklyQuota).toBeUndefined();
   });
 
   it("uses separate MiniMax Global and China endpoints with legacy fallback", async () => {
@@ -827,6 +929,7 @@ describe("provider fetchers", () => {
       usage_monthly: 7,
     } })).toMatchObject({
       session: 75,
+      sessionQuota: { used: 15, limit: 20, unit: "USD" },
       quotaHidden: false,
       weeklyHidden: true,
       sessionLabel: "Key limit",

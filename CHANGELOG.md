@@ -4,6 +4,10 @@
 
 ### Added
 
+- Quota bars now show the amounts behind the percentage when the provider
+  reports them, in the footer and in `/usage`: the OpenRouter key limit in its
+  reported currency, and Kimi and MiniMax windows as unlabeled counts. Central
+  bars use the same compact amount format (`$1,250/$5,000`).
 - Allow a user-confirmed, identity-bound Codex quota link for `openai` OAuth.
   Show real shared-plan percentages and reset times without forwarding the
   OpenAI token to the legacy endpoint. Stop polling if either identity changes.
@@ -18,7 +22,18 @@
 
 ### Changed
 
-- Updated the development and test baseline to Pi SDK 0.87.1.
+- Quota percentages above zero but below 1% now render as `<1%` instead of `0%`.
+- The footer no longer shows a provider's quota when the active model's
+  `baseUrl` points at another host, such as a proxy, LiteLLM, or another
+  gateway, because those requests do not spend that quota. OpenRouter regional
+  hosts (`*.openrouter.ai`) still count as OpenRouter; models without a
+  `baseUrl` keep provider-ID detection. Central detection still takes
+  precedence.
+- A model routed to OpenRouter or Vercel AI Gateway under another provider ID
+  now shows that gateway's footer usage, fetched with the credential Pi sends
+  for the model rather than the gateway provider's configured key.
+- Updated the development and test baseline to Pi SDK 1.3.0 and Bun 1.4.3, and
+  pinned `actions/setup-node` to v7.1.0.
 
 ### Fixed
 
@@ -27,6 +42,13 @@
   endpoint or show subscription indicators for API-key accounts.
 - Retry transient Fireworks `429`, `502`, `503`, and `504` responses once,
   respecting `Retry-After` and request cancellation.
+
+### Development
+
+- The extension entry point accepts optional `fetchFn`, `env`, and `cacheFile`
+  dependencies; Pi still calls it with the API only. Extension tests inject them
+  instead of replacing `globalThis.fetch`, run with an empty environment, use a
+  private cache file each, and fail on any request they do not stub.
 
 ## [0.7.2] - 2026-09-17
 

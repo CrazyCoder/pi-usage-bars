@@ -1,9 +1,13 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type {
   ExtensionAPI,
   ExtensionCommandContext,
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
+import type { FetchLike } from "../extensions/usage-bars/core";
 import usageBarsExtension, {
   type UsageBarsDependencies,
   XAI_MANAGEMENT_PROVIDER_ID,
@@ -16,6 +20,19 @@ const openaiToken = jwt({ client_id: "client", sub: "openai-user" });
 const codexToken = jwt({ sub: "codex-user", "https://api.openai.com/auth": { chatgpt_account_id: "workspace" } });
 const quotaLink = createHash("sha256").update(JSON.stringify(["client", "openai-user", "codex-user", "workspace"])).digest("hex");
 
+// Every harness gets its own cache file, so tests never share the Claude
+// fallback cache with each other or with a real Pi on this machine.
+const cacheDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-usage-bars-test-"));
+let cacheFiles = 0;
+afterAll(() => {
+  fs.rmSync(cacheDirectory, { recursive: true, force: true });
+});
+
+// Tests that do not pass a fetch function must not reach the network.
+const offlineFetch: FetchLike = async (input) => {
+  throw new Error(`unexpected network request: ${input}`);
+};
+
 interface Harness {
   handlers: Map<string, (event: unknown, ctx: ExtensionContext) => unknown>;
   commands: Map<string, { handler: (args: string, ctx: ExtensionCommandContext) => Promise<void> }>;
@@ -23,7 +40,14 @@ interface Harness {
   providers: unknown[];
 }
 
-function createHarness(options: { usageFlag?: boolean; dependencies?: Partial<UsageBarsDependencies> } = {}): Harness {
+function createHarness(
+  options: {
+    usageFlag?: boolean;
+    fetchFn?: FetchLike;
+    env?: NodeJS.ProcessEnv;
+    dependencies?: Partial<UsageBarsDependencies>;
+  } = {},
+): Harness {
   const harness: Harness = {
     handlers: new Map(),
     commands: new Map(),
@@ -50,7 +74,13 @@ function createHarness(options: { usageFlag?: boolean; dependencies?: Partial<Us
       },
     },
   } as unknown as ExtensionAPI;
-  usageBarsExtension(pi, { getOpenaiQuotaLink: () => undefined, ...options.dependencies });
+  usageBarsExtension(pi, {
+    getOpenaiQuotaLink: () => undefined,
+    fetchFn: options.fetchFn ?? offlineFetch,
+    env: options.env ?? {},
+    cacheFile: path.join(cacheDirectory, `cache-${cacheFiles += 1}.json`),
+    ...options.dependencies,
+  });
   return harness;
 }
 
@@ -64,12 +94,14 @@ function createContext(
     authHeaders?: Record<string, string>;
     baseUrl?: string;
     apiKey?: string;
+    modelToken?: string;
   } = {},
 ) {
   const statuses: Array<string | undefined> = [];
   const statusKeys: string[] = [];
   const notifications: string[] = [];
   let authCalls = 0;
+  let modelAuthCalls = 0;
   let customCalls = 0;
   let shutdownCalls = 0;
   const theme = {
@@ -79,7 +111,12 @@ function createContext(
   const context = {
     mode,
     hasUI: mode === "tui" || mode === "rpc",
-    model: { provider, id: "test-model", baseUrl: options.baseUrl, apiKey: options.apiKey },
+    model: {
+      provider,
+      id: "test-model",
+      ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+      ...(options.apiKey ? { apiKey: options.apiKey } : {}),
+    },
     ui: {
       theme,
       setStatus: (key: string, value: string | undefined) => {
@@ -103,6 +140,10 @@ function createContext(
         }
         return undefined;
       },
+      getApiKeyAndHeaders: async () => {
+        modelAuthCalls += 1;
+        return options.modelToken ? { ok: true, apiKey: options.modelToken } : { ok: true };
+      },
     },
   } as unknown as ExtensionCommandContext;
   return {
@@ -111,27 +152,24 @@ function createContext(
     statusKeys,
     notifications,
     authCalls: () => authCalls,
+    modelAuthCalls: () => modelAuthCalls,
     customCalls: () => customCalls,
     shutdownCalls: () => shutdownCalls,
   };
 }
 
-const originalFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-});
 
 describe("usage-bars extension lifecycle", () => {
   it("uses only the explicitly linked Codex account for OpenAI quota bars", async () => {
     const requests: string[] = [];
-    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    const testFetch = (async (_url: unknown, init?: RequestInit) => {
       requests.push(new Headers(init?.headers).get("authorization")!);
       return new Response(JSON.stringify({ rate_limit: {
         primary_window: { used_percent: 12, reset_after_seconds: 3600 },
         secondary_window: { used_percent: 34, reset_after_seconds: 86400 },
       } }), { status: 200 });
-    }) as typeof fetch;
-    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    }) as unknown as FetchLike;
+    const harness = createHarness({ fetchFn: testFetch,  dependencies: { getOpenaiQuotaLink: () => quotaLink } });
     const mock = createContext("tui", "openai", { configured: true });
     mock.context.modelRegistry.getProviderAuth = async (provider) => ({
       auth: { apiKey: provider === "openai" ? openaiToken : codexToken }, source: "OAuth",
@@ -147,13 +185,13 @@ describe("usage-bars extension lifecycle", () => {
 
   it("renders the linked shared-plan quota and its limitation in /usage", async () => {
     const requests: string[] = [];
-    globalThis.fetch = (async (_url: unknown, init?: RequestInit) => {
+    const testFetch = (async (_url: unknown, init?: RequestInit) => {
       requests.push(new Headers(init?.headers).get("authorization")!);
       return new Response(JSON.stringify({
         rate_limit: { secondary_window: { used_percent: 34, reset_after_seconds: 86400 } },
       }), { status: 200 });
-    }) as typeof fetch;
-    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    }) as unknown as FetchLike;
+    const harness = createHarness({ fetchFn: testFetch,  dependencies: { getOpenaiQuotaLink: () => quotaLink } });
     const mock = createContext("tui", "openai", { configured: true });
     const context = mock.context as any;
     context.modelRegistry.getProvider = (provider: string) => ["openai", "openai-codex"].includes(provider) ? {} : undefined;
@@ -202,8 +240,8 @@ describe("usage-bars extension lifecycle", () => {
 
   it.each(["changed account", "missing login", "API key", "invalid config"])("fails closed for a linked quota %s", async (failure) => {
     let requests = 0;
-    globalThis.fetch = (async () => { requests += 1; throw new Error("Must not request quota"); }) as unknown as typeof fetch;
-    const harness = createHarness({ dependencies: {
+    const testFetch = (async () => { requests += 1; throw new Error("Must not request quota"); }) as unknown as FetchLike;
+    const harness = createHarness({ fetchFn: testFetch,  dependencies: {
       getOpenaiQuotaLink: () => failure === "invalid config" ? true : quotaLink,
     } });
     const mock = createContext("tui", "openai", { configured: true });
@@ -302,8 +340,8 @@ describe("usage-bars extension lifecycle", () => {
 
   it("shows the OpenAI ChatGPT plan without polling the legacy quota endpoint", async () => {
     let requests = 0;
-    globalThis.fetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as typeof fetch;
-    const harness = createHarness();
+    const testFetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as FetchLike;
+    const harness = createHarness({ fetchFn: testFetch });
     const mock = createContext("tui", "openai", { configured: true, source: "OAuth", token: "chatgpt-token" });
     const providers: string[] = [];
     const resolve = mock.context.modelRegistry.getProviderAuth.bind(mock.context.modelRegistry);
@@ -329,8 +367,8 @@ describe("usage-bars extension lifecycle", () => {
 
   it.each(["API key", undefined])("does not show a ChatGPT plan for OpenAI auth source %s", async (source) => {
     let requests = 0;
-    globalThis.fetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as typeof fetch;
-    const harness = createHarness();
+    const testFetch = (async () => { requests += 1; throw new Error("No quota request expected"); }) as unknown as FetchLike;
+    const harness = createHarness({ fetchFn: testFetch });
     const mock = createContext("tui", "openai", { configured: true, source, token: "api-key" });
     harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
     await new Promise((resolve) => setTimeout(resolve, 25));
@@ -342,14 +380,14 @@ describe("usage-bars extension lifecycle", () => {
   });
 
   it("uses Pi provider auth and emits usage updates in TUI mode", async () => {
-    globalThis.fetch = (async () => new Response(JSON.stringify({
+    const fetchFn = (async () => new Response(JSON.stringify({
       rate_limit: {
         primary_window: { used_percent: 12 },
         secondary_window: { used_percent: 34 },
       },
-    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "openai-codex", {
       configured: true,
       source: "OAuth",
@@ -381,8 +419,8 @@ describe("usage-bars extension lifecycle", () => {
           weeklyLabel: "Today",
           sessionResetsIn: "2d",
           weeklyResetsIn: "12h",
-          sessionQuota: { used: 1250, limit: 5000, unit: "USD", label: "Monthly" },
-          weeklyQuota: { used: 12.5, limit: 50, unit: "USD", label: "Today" },
+          sessionQuota: { used: 1250, limit: 5000, unit: "USD" },
+          weeklyQuota: { used: 12.5, limit: 50, unit: "USD" },
           };
         },
       },
@@ -399,8 +437,8 @@ describe("usage-bars extension lifecycle", () => {
       name: "@jetserge/pi-usage-bars:update",
       data: expect.objectContaining({ provider: "central", session: 25, weekly: 25 }),
     });
-    expect(mock.statuses.at(-1)).toContain("Central M ██░░░░░░ 25% $1.25K / $5K ⟳ 2d");
-    expect(mock.statuses.at(-1)).toContain("D ██░░░░░░ 25% $12.5 / $50 ⟳ 12h");
+    expect(mock.statuses.at(-1)).toContain("Central M ██░░░░░░ 25% $1,250/$5,000 ⟳ 2d");
+    expect(mock.statuses.at(-1)).toContain("D ██░░░░░░ 25% $12.5/$50 ⟳ 12h");
     await harness.commands.get("central-quota")?.handler("", mock.context);
     expect(fetchCalls).toBe(2);
 
@@ -439,9 +477,38 @@ describe("usage-bars extension lifecycle", () => {
     expect(mock.notifications).toContain("invalid usage-bars.json");
   });
 
+  it("shows no footer quota for a supported provider routed through a proxy", async () => {
+    const requested: string[] = [];
+    const fetchFn = (async (url: RequestInfo | URL) => {
+      requested.push(String(url));
+      return new Response(JSON.stringify({
+        rate_limit: {
+          primary_window: { used_percent: 12 },
+          secondary_window: { used_percent: 34 },
+        },
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as FetchLike;
+
+    const harness = createHarness({ fetchFn });
+    const mock = createContext("tui", "openai-codex", {
+      configured: true,
+      source: "OAuth",
+      token: "resolved-by-pi",
+      baseUrl: "http://localhost:4000/backend-api",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(mock.statuses.some((status) => status?.includes("Codex"))).toBe(false);
+    expect(harness.emitted.some((event) => (event.data as { provider?: string })?.provider === "codex")).toBe(false);
+    expect(requested.some((url) => url.includes("chatgpt.com"))).toBe(false);
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("resolves kimi-coding tokens exposed only via the Authorization header", async () => {
     let requestHeaders: HeadersInit | undefined;
-    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const fetchFn = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       requestHeaders = init?.headers;
       return new Response(JSON.stringify({
         usage: {
@@ -460,9 +527,9 @@ describe("usage-bars extension lifecycle", () => {
           },
         }],
       }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "kimi-coding", {
       configured: true,
       source: "OAuth",
@@ -477,13 +544,15 @@ describe("usage-bars extension lifecycle", () => {
       data: expect.objectContaining({ provider: "kimi", session: 25, weekly: 25 }),
     });
     expect(mock.statuses.at(-1)).toContain("Kimi");
+    expect(mock.statuses.at(-1)).toContain("25% 50/200");
+    expect(mock.statuses.at(-1)).toContain("25% 512/2,048");
     expect(requestHeaders).toMatchObject({ Authorization: "Bearer kimi-token-from-header" });
 
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
 
   it("renders a weekly-only Codex window without a fabricated session lane", async () => {
-    globalThis.fetch = (async () => new Response(JSON.stringify({
+    const fetchFn = (async () => new Response(JSON.stringify({
       plan_type: "team",
       rate_limit: {
         primary_window: {
@@ -493,9 +562,9 @@ describe("usage-bars extension lifecycle", () => {
         },
         secondary_window: null,
       },
-    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
+    }), { status: 200, headers: { "content-type": "application/json" } })) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "openai-codex", {
       configured: true,
       source: "OAuth",
@@ -516,15 +585,15 @@ describe("usage-bars extension lifecycle", () => {
   });
 
   it("polls OpenRouter through Pi auth and emits financial usage", async () => {
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0]) => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0]) => {
       const url = String(input);
       const body = url.endsWith("/credits")
         ? { data: { total_credits: 30, total_usage: 10 } }
         : { data: { limit: null, limit_remaining: null, usage_daily: 1, usage_weekly: 2, usage_monthly: 3 } };
       return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "openrouter", {
       configured: true,
       source: "Environment variable",
@@ -548,17 +617,109 @@ describe("usage-bars extension lifecycle", () => {
     harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
   });
 
+  it("credits OpenRouter with the model's own key when another provider routes through it", async () => {
+    const authorizations: Array<string | null> = [];
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization"));
+      const body = String(input).endsWith("/credits")
+        ? { data: { total_credits: 50, total_usage: 10 } }
+        : { data: { limit: null, limit_remaining: null, usage_daily: 1, usage_weekly: 2, usage_monthly: 3 } };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as FetchLike;
+
+    const harness = createHarness({ fetchFn });
+    const mock = createContext("tui", "anthropic", {
+      configured: true,
+      source: "Environment variable",
+      token: "openrouter-provider-key",
+      baseUrl: "https://openrouter.ai/api",
+      modelToken: "model-key",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(mock.modelAuthCalls()).toBe(1);
+    expect(mock.authCalls()).toBe(0);
+    expect(authorizations.length).toBeGreaterThan(0);
+    expect(authorizations.every((value) => value === "Bearer model-key")).toBeTrue();
+    expect(mock.statuses.at(-1)).toContain("OpenRouter");
+    expect(mock.statuses.at(-1)).toContain("$40.00");
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("does not show another key's gateway usage after switching routes", async () => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const modelKey = new Headers(init?.headers).get("authorization") === "Bearer model-key";
+      const body = String(input).endsWith("/credits")
+        ? { data: { total_credits: modelKey ? 50 : 30, total_usage: 10 } }
+        : { data: { limit: null, limit_remaining: null, usage_daily: 1, usage_weekly: 2, usage_monthly: 3 } };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as unknown as FetchLike;
+
+    const harness = createHarness({ fetchFn });
+    const mock = createContext("tui", "openrouter", {
+      configured: true,
+      source: "Environment variable",
+      token: "openrouter-provider-key",
+      modelToken: "model-key",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.statuses.at(-1)).toContain("$20.00");
+
+    harness.handlers.get("model_select")?.({
+      type: "model_select",
+      model: { provider: "anthropic", id: "routed-model", baseUrl: "https://openrouter.ai/api" },
+      previousModel: { provider: "openrouter", id: "test-model" },
+      source: "set",
+    }, mock.context);
+    expect(mock.statuses.at(-1)).toContain("loading");
+    expect(mock.statuses.at(-1)).not.toContain("$20.00");
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mock.statuses.at(-1)).toContain("$40.00");
+
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
+  it("resolves monitoring endpoints from the injected environment", async () => {
+    const urls: string[] = [];
+    const fetchFn = (async (input: string) => {
+      urls.push(input);
+      return new Response(JSON.stringify({ data: { total_credits: 30, total_usage: 10 } }), { status: 200 });
+    }) as unknown as FetchLike;
+
+    const harness = createHarness({
+      fetchFn,
+      env: {
+        PI_OPENROUTER_CREDITS_ENDPOINT: "https://usage.example.test/credits",
+        PI_OPENROUTER_KEY_ENDPOINT: "https://usage.example.test/key",
+      },
+    });
+    const mock = createContext("tui", "openrouter", {
+      configured: true,
+      source: "Environment variable",
+      token: "resolved-by-pi",
+    });
+    harness.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, mock.context);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+
+    expect(urls.sort()).toEqual(["https://usage.example.test/credits", "https://usage.example.test/key"]);
+    harness.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, mock.context);
+  });
+
   it("aborts an active provider request during session shutdown", async () => {
     let requestAborted = false;
-    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) =>
+    const fetchFn = (async (_url: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           requestAborted = true;
           reject(new DOMException("Aborted", "AbortError"));
         }, { once: true });
-      })) as unknown as typeof fetch;
+      })) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "openai-codex", {
       configured: true,
       source: "OAuth",
@@ -576,7 +737,7 @@ describe("usage-bars extension lifecycle", () => {
   it("replaces an active poll cleanly when a session runtime starts again", async () => {
     let calls = 0;
     let firstRequestAborted = false;
-    globalThis.fetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const fetchFn = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       calls += 1;
       if (calls === 1) {
         return new Promise<Response>((_resolve, reject) => {
@@ -592,9 +753,9 @@ describe("usage-bars extension lifecycle", () => {
           secondary_window: { used_percent: 43 },
         },
       }), { status: 200 });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const first = createContext("tui", "openai-codex", {
       configured: true,
       source: "OAuth",
@@ -650,7 +811,7 @@ describe("usage-bars extension lifecycle", () => {
 
   it("cancels an old provider poll and refreshes the newly selected model provider", async () => {
     let codexRequestAborted = false;
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes("chatgpt.com")) {
         return new Promise<Response>((_resolve, reject) => {
@@ -664,9 +825,9 @@ describe("usage-bars extension lifecycle", () => {
         ? { data: { total_credits: 20, total_usage: 5 } }
         : { data: { usage_monthly: 2 } };
       return new Response(JSON.stringify(body), { status: 200 });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "openai-codex", {
       configured: true,
       source: "OAuth",
@@ -692,15 +853,15 @@ describe("usage-bars extension lifecycle", () => {
 
   it.each(["openai-codex", "openai"])("aborts /usage requests for %s when the custom component closes", async (provider) => {
     let selectorRequestAborted = false;
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) =>
+    const fetchFn = (async (_input: RequestInfo | URL, init?: RequestInit) =>
       new Promise<Response>((_resolve, reject) => {
         init?.signal?.addEventListener("abort", () => {
           selectorRequestAborted = true;
           reject(new DOMException("Aborted", "AbortError"));
         }, { once: true });
-      })) as unknown as typeof fetch;
+      })) as unknown as FetchLike;
 
-    const harness = createHarness({ dependencies: { getOpenaiQuotaLink: () => quotaLink } });
+    const harness = createHarness({ fetchFn, dependencies: { getOpenaiQuotaLink: () => quotaLink } });
     const mock = createContext("tui", provider, {
       configured: true,
       source: "OAuth",
@@ -742,7 +903,7 @@ describe("usage-bars extension lifecycle", () => {
   });
 
   it("polls Baseten through Pi auth and renders current-month credits used", async () => {
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       expect(String(input)).toContain("https://api.baseten.co/v1/billing/usage_summary?");
       expect(String(input)).toContain("start_date=");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer resolved-by-pi");
@@ -750,9 +911,9 @@ describe("usage-bars extension lifecycle", () => {
         dedicated_usage: { credits_used: 2 },
         model_apis_usage: { credits_used: 3 },
       }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "baseten", {
       configured: true,
       source: "Environment variable",
@@ -777,16 +938,16 @@ describe("usage-bars extension lifecycle", () => {
   });
 
   it("polls Vercel AI Gateway through Pi auth and renders balance", async () => {
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       expect(String(input)).toBe("https://ai-gateway.vercel.sh/v1/credits");
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer resolved-by-pi");
       return new Response(JSON.stringify({ balance: "18.75", total_used: "6.25" }), {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "vercel-ai-gateway", {
       configured: true,
       source: "Environment variable",
@@ -813,7 +974,7 @@ describe("usage-bars extension lifecycle", () => {
 
   it("polls Fireworks through Pi auth and renders current-month spend", async () => {
     const urls: string[] = [];
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       urls.push(String(input));
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer resolved-by-pi");
       if (String(input).includes("/accounts?pageSize=")) {
@@ -825,9 +986,9 @@ describe("usage-bars extension lifecycle", () => {
       return new Response(JSON.stringify({
         lineItems: [{ totalCost: { currencyCode: "USD", units: "4", nanos: 500_000_000 } }],
       }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "fireworks", {
       configured: true,
       source: "Environment variable",
@@ -855,7 +1016,7 @@ describe("usage-bars extension lifecycle", () => {
 
   it("polls xAI billing through its separate Pi-managed credential", async () => {
     const urls: string[] = [];
-    globalThis.fetch = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const fetchFn = (async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
       const url = String(input);
       urls.push(url);
       expect(new Headers(init?.headers).get("authorization")).toBe("Bearer resolved-management-key");
@@ -875,9 +1036,9 @@ describe("usage-bars extension lifecycle", () => {
         status: 200,
         headers: { "content-type": "application/json" },
       });
-    }) as unknown as typeof fetch;
+    }) as unknown as FetchLike;
 
-    const harness = createHarness();
+    const harness = createHarness({ fetchFn });
     const mock = createContext("tui", "xai", {
       configured: true,
       source: "stored credential",
