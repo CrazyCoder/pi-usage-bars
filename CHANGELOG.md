@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.4] - 2026-11-01
+
 ### Fixed
 
 - Store the Claude cache entry under a new key. Pi sessions running an older
