@@ -41,7 +41,16 @@ at another commit, or is not on `main`. It upgrades to npm 11 because npm 12 has
 failed provenance publishing with a missing `sigstore` module.
 
 Use the workflow's manual `dry_run` input to exercise installation, tests, and
-tarball verification without publishing.
+tarball verification without publishing. A manual run on the tag with `dry_run`
+off publishes and creates the GitHub release, as the tag push does:
+
+```bash
+gh workflow run publish.yml --repo CrazyCoder/pi-usage-bars --ref v<version> -f dry_run=false
+```
+
+GitHub does not run the workflows of a fork on a push until the owner enables
+them once, with "I understand my workflows, go ahead and enable them" on the
+Actions tab of the repository.
 
 ## Post-release check
 
