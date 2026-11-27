@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Changed
+
+- Updated the development and test baseline to Pi SDK 1.5.2, merged from
+  upstream 0.8.0.
+
+### Documentation
+
+- The `--usage` smoke test runs Pi in print mode, and the README explains that
+  the JSON line goes to stderr.
+
 ## [0.7.5] - 2026-11-27
 
 ### Fixed
