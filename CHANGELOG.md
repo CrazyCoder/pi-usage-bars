@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- Read the snake_case keys that `central limit --json` prints from JetBrains
+  Central 2.10 on. The JetBrains Central bars showed "Central limit response has
+  no usage totals" instead of the budget.
+
 ## [0.7.4] - 2026-11-01
 
 ### Fixed

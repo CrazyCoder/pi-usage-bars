@@ -211,6 +211,27 @@ describe("JetBrains Central usage", () => {
     expect(() => parseCentralLimit({ usedDollars: "-1", maxDollars: "100" })).toThrow("usage totals");
   });
 
+  it("reads the snake_case keys of Central 2.10 into the same limit and tracking key", () => {
+    const camel = parseCentralLimit({
+      email: "user@example.com",
+      licenseName: "AI Pro",
+      refillLast: 1,
+      refillNext: now,
+      usedDollars: "1",
+      maxDollars: "100",
+    });
+    const snake = parseCentralLimit({
+      email: "user@example.com",
+      license_name: "AI Pro",
+      refill_last: 1,
+      refill_next: now,
+      used_dollars: "1",
+      max_dollars: "100",
+    });
+    expect(snake).toEqual(camel);
+    expect(snake).toMatchObject({ used: 1, limit: 100, refillNext: now });
+  });
+
   it("tracks positive daily deltas and resets the day without losing the first delta", () => {
     const firstTime = new Date(2026, 8, 4, 23, 50).getTime();
     const first = updateCentralDailyState(undefined, 10, firstTime, "account-a");

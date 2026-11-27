@@ -75,19 +75,22 @@ export function readConfig(configPath: string): Record<string, unknown> {
   return value;
 }
 
+// Central 2.10 and later print the keys of `limit --json` in snake_case
+// (`used_dollars`), earlier versions in camelCase (`usedDollars`).
 export function parseCentralLimit(value: unknown): CentralLimit {
   if (!isRecord(value)) throw new Error("invalid Central limit response");
-  const used = finiteNumber(value.usedDollars);
-  const limit = finiteNumber(value.maxDollars);
-  const refillNext = finiteNumber(value.refillNext);
+  const used = finiteNumber(value.used_dollars ?? value.usedDollars);
+  const limit = finiteNumber(value.max_dollars ?? value.maxDollars);
+  const refillNext = finiteNumber(value.refill_next ?? value.refillNext);
+  const licenseName = value.license_name ?? value.licenseName;
   if (used === undefined || used < 0 || limit === undefined || limit < 0) {
     if (value.managed === true) throw new Error("Central Server manages limits and exposes no usage totals");
     throw new Error("Central limit response has no usage totals");
   }
   const identity = [
     typeof value.email === "string" ? value.email : "",
-    typeof value.licenseName === "string" ? value.licenseName : "",
-    String(finiteNumber(value.refillLast) ?? ""),
+    typeof licenseName === "string" ? licenseName : "",
+    String(finiteNumber(value.refill_last ?? value.refillLast) ?? ""),
   ].join("\0");
   const trackingId = identity === "\0\0"
     ? undefined
