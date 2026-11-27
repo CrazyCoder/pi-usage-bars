@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.5] - 2026-11-27
+
 ### Fixed
 
 - Read the snake_case keys that `central limit --json` prints from JetBrains
